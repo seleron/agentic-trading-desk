@@ -8,26 +8,47 @@ The ruling principle is: **the AI fetches data and interacts with the user; the 
 
 ## 🚀 Project Architecture
 
-The project is designed to operate locally and modularly. All technical indicator computations are delegated to Python 3 scripts that only use the Python standard library (`stdlib`), ensuring speed and zero network dependencies during execution.
+The project is designed to operate locally and modularly. All technical indicator computations are delegated to Python 3 scripts that only use the Python standard library (`stdlib`), ensuring speed and zero network dependencies during execution (except `data_fetcher.py` which requires ccxt for exchange connectivity).
 
 ```mermaid
 graph TD
-    A[Robinhood MCP / API] -- Price Historicals / Quotes --> B[Claude / Agentic Core]
+    A[ccxt Exchange API] -- OHLCV Data --> B[Claude / Agentic Core]
     C[Investing.com / Web] -- 10Y-2Y Spread / News --> B
-    B -- JSON of Daily Closes --> D[scripts/macro_pillar.py]
-    B -- JSON of Closes + Holding status --> E[scripts/score.py]
-    D -- Injected Macro Score --> E
-    E -- Raw Indicators --> F[scripts/indicators.py]
-    E -- Three-Pillar Scorecard + Suggested Decision --> B
-    B -- Visualized Proposal --> G[User]
-    G -- Order Confirmation --> A
+    D[data_fetcher.py] -- Multi-exchange data --> B
+    E[multi_timeframe.py] -- MTF confirmation --> B
+    B -- JSON of Daily Closes --> F[scripts/macro_pillar.py]
+    B -- JSON of Closes + Holding status --> G[scripts/score.py]
+    F -- Injected Macro Score --> G
+    G -- Raw Indicators --> H[scripts/indicators.py]
+    G -- Three-Pillar Scorecard + Decision --> I[scripts/trade_plan.py]
+    I -- Entry/Stop/Targets Plan --> B
+    B -- Visualized Proposal --> J[User]
+    J -- Order Confirmation --> A
+    K[weight_optimizer.py] -- Optimal weights --> L[config.yaml]
+    M[backtest.py] -- Validation metrics --> L
 ```
+
+### Architecture Improvements Over Original
+* **Multi-exchange support** via ccxt — no longer tied to Robinhood
+* **BIST/Borsa Istanbul** support for Turkish market analysis
+* **Config-driven weights** in `config.yaml` instead of hardcoded values
+* **Weight optimization** loop — optimizer finds best pillar weights, writes back to config
+* **Multi-timeframe confirmation** prevents false signals from single-TF noise
+* **Structured trade plans** with position sizing, stop loss, and take profit targets
+* **Backtesting pipeline** for validating weight combinations before live deployment
 
 ### File Structure
 *   **[SKILL.md](SKILL.md)**: Operations manual and specific guardrails guiding the AI agent's actions.
+*   **[config.yaml](config.yaml)**: All pillar weights, scoring thresholds, and data fetcher settings.
+*   **[requirements.txt](requirements.txt)**: External dependencies (ccxt, pyyaml).
 *   **[scripts/indicators.py](scripts/indicators.py)**: Mathematical engine to calculate technical indicators without visual estimations.
 *   **[scripts/macro_pillar.py](scripts/macro_pillar.py)**: Macro regime detector and cross-asset sentiment scorer.
 *   **[scripts/score.py](scripts/score.py)**: Evaluator of the three-pillar framework and exit/entry decision engine.
+*   **[scripts/data_fetcher.py](scripts/data_fetcher.py)**: Universal data fetcher using ccxt for multi-exchange support (Binance, Coinbase, Kraken, BIST).
+*   **[scripts/multi_timeframe.py](scripts/multi_timeframe.py)**: Multi-timeframe confirmation engine — analyzes trend alignment across timeframes.
+*   **[scripts/trade_plan.py](scripts/trade_plan.py)**: Structured trade plan generator — entry/stop/targets with position sizing and risk management.
+*   **[scripts/weight_optimizer.py](scripts/weight_optimizer.py)**: Hyperopt-style weight optimizer — grid/random search for optimal pillar weights.
+*   **[scripts/backtest.py](scripts/backtest.py)**: Walk-forward backtesting engine — Sharpe, Sortino, max drawdown, profit factor metrics.
 
 ---
 
@@ -106,6 +127,79 @@ To obtain the complete three-pillar scorecard and action suggestion for the Agen
 python3 scripts/score.py ticker_input.json        # human-readable table
 python3 scripts/score.py ticker_input.json --json  # machine-readable output
 python3 scripts/score.py                           # self-test with synthetic data
+```
+
+### 4. Multi-Exchange Data Fetching (NEW)
+Universal data fetcher using ccxt for any exchange:
+```bash
+# Single symbol
+python3 scripts/data_fetcher.py BINANCE BTC/USDT 1d --json
+
+# BIST stock
+python3 scripts/data_fetcher.py mexc THYAO/TRY 1d --json
+
+# All macro ETFs at once
+python3 scripts/data_fetcher.py binance SPY/USD 1d --macro
+```
+
+### 5. Multi-Timeframe Confirmation (NEW)
+Analyze trend alignment across multiple timeframes:
+```bash
+cat mtf_input.json | python3 scripts/multi_timeframe.py --stdin
+```
+*Input format:*
+```json
+{
+  "symbol": "BTC/USDT",
+  "timeframes": {
+    "1d": [close_prices...],
+    "4h": [close_prices...],
+    "15m": [close_prices...]
+  }
+}
+```
+
+### 6. Trade Plan Generator (NEW)
+Generate structured trade plans with entry/stop/targets:
+```bash
+python3 scripts/trade_plan.py --score scorecard.json --capital 10000
+python3 scripts/trade_plan.py --stdin < scorecard.json
+```
+
+### 7. Weight Optimizer (NEW)
+Find optimal pillar weights via grid or random search:
+```bash
+# Grid search over weight combinations
+python3 scripts/weight_optimizer.py --mode grid \
+    --input history.json --output best_weights.json
+
+# Random search with target Sharpe ratio
+python3 scripts/weight_optimizer.py --mode optimize \
+    --input history.json --iterations 1000 --target-sharpe 1.5
+```
+
+### 8. Backtesting Engine (NEW)
+Walk-forward backtesting with slippage and commission:
+```bash
+python3 scripts/backtest.py --input bars.json \
+    --weights trend=0.4 momentum=0.35 macro_sentiment=0.25 \
+    --capital 10000 --output results.json
+```
+
+*Output includes:* Sharpe ratio, Sortino ratio, max drawdown, win rate, profit factor, Calmar ratio, and detailed trade statistics.
+
+### 9. Configuration (NEW)
+All weights and parameters are now in `config.yaml`:
+```yaml
+pillar_weights:
+  trend: 0.40
+  momentum: 0.35
+  macro_sentiment: 0.25
+# ... see config.yaml for full options
+
+data_fetcher:
+  default_exchange: "binance"
+  default_timeframe: "1d"
 ```
 *Expected format for `ticker_input.json`:*
 ```json

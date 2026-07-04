@@ -1,0 +1,50 @@
+# Agentic Trading Desk — Configuration
+# All weights and parameters for the three-pillar framework.
+# Modify these to tune sensitivity; optimizer will find optimal values.
+
+pillar_weights:
+  trend: 0.40
+  momentum: 0.35
+  macro_sentiment: 0.25
+
+trend_scoring:
+  ema_short: 20
+  ema_mid: 50
+  ema_long: 200
+  slope_lookback: 5
+  price_above_ema_weight: 1.0
+  short_above_mid_weight: 1.0
+  mid_above_long_weight: 1.0
+  long_slope_up_weight: 1.0
+
+momentum_scoring:
+  rsi_period: 14
+  rsi_bull_threshold: 55
+  rsi_bear_threshold: 45
+  macd_fast: 12
+  macd_slow: 26
+  macd_signal: 9
+  trix_period: 15
+  trix_signal: 9
+
+macro_scoring:
+  concentration_weight: 0.25
+  yield_curve_weight: 0.20
+  credit_weight: 0.15
+  size_weight: 0.15
+  equity_bond_weight: 0.15
+  sector_weight: 0.10
+
+decision_thresholds:
+  exit_trim_exhaustion_min_flags: 2
+  exit_relentless_bearish_min_flags: 3
+  death_cross_bearish_min_flags: 2
+  reentry_min_flags: 2
+  tactical_reentry_death_cross: true
+  adverse_macro_exit_threshold_adjustment: -1
+
+data_fetcher:
+  default_exchange: "binance"
+  default_timeframe: "1d"
+  max_bars: 500
+  fallback_bars: 300
