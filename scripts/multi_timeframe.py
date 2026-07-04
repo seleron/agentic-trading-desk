@@ -192,7 +192,7 @@ def main() -> int:
 
         output = json.dumps(result, indent=2, ensure_ascii=False)
 
-        if args.json or True:  # Always JSON for MTF results
+        if args.json:
             print(output)
         else:
             render_result(result)

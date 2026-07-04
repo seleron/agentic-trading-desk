@@ -49,11 +49,8 @@ def calculate_position_size(
     if entry_price <= 0 or stop_loss_price <= 0:
         return {"error": "Invalid price input"}
 
-    # Distance to stop loss as percentage
-    if entry_price > stop_loss_price:
-        risk_pct = abs(entry_price - stop_loss_price) / entry_price
-    else:
-        risk_pct = abs(entry_price - stop_loss_price) / entry_price
+    # Distance to stop loss as percentage (works for longs and shorts)
+    risk_pct = abs(entry_price - stop_loss_price) / entry_price
 
     if risk_pct == 0:
         return {"error": "Stop loss at same price as entry"}
@@ -61,8 +58,8 @@ def calculate_position_size(
     # Risk amount in currency
     risk_amount = capital * risk_per_trade_pct
 
-    # Position size in base asset units
-    position_size = risk_amount / (entry_price - stop_loss_price) if entry_price > stop_loss_price else 0
+    # Position size in base asset units (absolute risk per unit)
+    position_size = risk_amount / abs(entry_price - stop_loss_price) if entry_price != stop_loss_price else 0
 
     # Total position value
     position_value = position_size * entry_price if position_size > 0 else 0

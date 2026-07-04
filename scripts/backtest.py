@@ -141,10 +141,17 @@ def run_backtest(
     if not bars or len(bars) < 50:
         raise ValueError("Need at least 50 bars for backtesting")
 
+    # Entry/exit thresholds. Per-bar scores are in {-1, +1} and pillar weights
+    # sum to ~1.0, so composite lives in roughly [-1, +1]. Thresholds must sit
+    # inside that range or no trade ever fires (macro_score is neutral here, so
+    # the reachable max is trend_weight + momentum_weight < 1.0).
+    ENTRY_THRESHOLD = 0.5
+
     # Initialize state
     equity = capital
     position_size = 0.0
     in_position = False
+    entry_fill_price = 0.0  # persisted actual fill price of the open position
 
     equity_curve = [capital]
     daily_returns = []
@@ -175,30 +182,33 @@ def run_backtest(
             mom_score = 1.0 if roc > 0 else -1.0
             macro_score = 0  # Simplified: neutral macro for backtest
 
+            # Accept both "macro_sentiment" and the CLI's "macro" alias.
+            w_trend = pillar_weights.get("trend", 0.4)
+            w_mom = pillar_weights.get("momentum", 0.35)
+            w_macro = pillar_weights.get("macro_sentiment", pillar_weights.get("macro", 0.25))
+
             composite = (
-                pillar_weights["trend"] * trend_score +
-                pillar_weights["momentum"] * mom_score +
-                pillar_weights["macro_sentiment"] * macro_score
+                w_trend * trend_score +
+                w_mom * mom_score +
+                w_macro * macro_score
             )
         else:
             composite = 0
 
-        entry_price = price * (1 + slippage_pct) if in_position == False and composite >= 1.0 else None
-        exit_price = price * (1 - slippage_pct) if in_position and composite <= -1.0 else None
-
         # Entry signal: composite score crosses above threshold
-        if not in_position and composite >= 1.5:
-            position_size = equity * 0.95 / entry_price if entry_price else 0
-            equity -= position_size * price * commission_pct  # Commission on entry
+        if not in_position and composite >= ENTRY_THRESHOLD:
+            entry_fill_price = price * (1 + slippage_pct)  # pay slippage on entry
+            position_size = equity * 0.95 / entry_fill_price
+            equity -= position_size * entry_fill_price * commission_pct  # Commission on entry
             in_position = True
-            trade_log.append({"type": "entry", "price": price, "index": i})
+            trade_log.append({"type": "entry", "price": round(entry_fill_price, 6), "index": i})
 
-        # Exit signal: composite score drops below threshold OR stop loss
-        elif in_position and (composite <= -1.5 or price < bars[i]["low"] * 0.98):
+        # Exit signal: composite drops below threshold OR 2% stop below entry fill
+        elif in_position and (composite <= -ENTRY_THRESHOLD or price < entry_fill_price * 0.98):
             exit_price = price * (1 - slippage_pct)
             proceeds = position_size * exit_price
             equity += proceeds - proceeds * commission_pct  # Commission on exit
-            trade_return = (proceeds / (position_size * entry_price)) - 1
+            trade_return = (proceeds / (position_size * entry_fill_price)) - 1
             in_position = False
 
             if trade_return > 0:
@@ -225,12 +235,16 @@ def run_backtest(
         daily_ret = (equity_curve[-1] - prev_eq) / prev_eq if prev_eq != 0 else 0.0
         daily_returns.append(daily_ret)
 
-    # Close open position at end
+    # Close open position at end (record it in win/loss accounting)
     if in_position:
         final_price = bars[-1]["close"] * (1 - slippage_pct)
         equity += position_size * final_price - position_size * final_price * commission_pct
-        final_return = (equity / capital) - 1
-        trade_log.append({"type": "exit_closed", "price": bars[-1]["close"], "return_pct": round(final_return * 100, 2)})
+        exit_return = (equity / capital) - 1
+        trade_log.append({"type": "exit_closed", "price": bars[-1]["close"], "return_pct": round(exit_return * 100, 2)})
+        if exit_return > 0:
+            winning_trades.append(exit_return)
+        else:
+            losing_trades.append(exit_return)
 
     # Calculate metrics
     total_return_pct = ((equity_curve[-1] / equity_curve[0]) - 1) * 100 if len(equity_curve) > 1 else 0.0
@@ -240,8 +254,9 @@ def run_backtest(
     sortino = calculate_sortino(daily_returns)
     max_dd, dd_start, dd_end = calculate_max_drawdown(equity_curve)
 
-    # Calmar ratio: annualized return / max drawdown
-    calmar = round(annualized_ret * 252 / (max_dd / 100), 4) if max_dd > 0 else None
+    # Calmar ratio: annualized return / max drawdown (annualized_ret is already
+    # annualized as a fraction, and max_dd is a percentage → divide by 100)
+    calmar = round(annualized_ret / (max_dd / 100), 4) if max_dd > 0 else None
 
     total_trades = len(winning_trades) + len(losing_trades)
     win_rate = (len(winning_trades) / total_trades * 100) if total_trades > 0 else 0.0
@@ -339,7 +354,7 @@ def main() -> int:
         print(f"  Annualized:      {result.annualized_return_pct:.2f}%", file=sys.stderr)
         print(f"  Sharpe Ratio:    {result.sharpe_ratio}", file=sys.stderr)
         print(f"  Max Drawdown:    {result.max_drawdown_pct:.2f}%", file=sys.stderr)
-        print(f"  Win Rate:        {result.win_rate_pct:.1f}% ({result.winning_trades}/{result.total_trades})")
+        print(f"  Win Rate:        {result.win_rate_pct:.1f}% ({result.winning_trades}/{result.total_trades})", file=sys.stderr)
         print(f"  Profit Factor:   {result.profit_factor}", file=sys.stderr)
 
         return 0

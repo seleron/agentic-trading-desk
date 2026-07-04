@@ -2,22 +2,19 @@
 """
 weight_optimizer.py
 ===================
-Hyperopt-style weight optimizer for the three-pillar framework.
+Grid + random search weight optimizer for the three-pillar framework.
 
-Finds optimal pillar weights and scoring thresholds using walk-forward
-validation against historical data. Uses a grid search + gradient-free
-optimization approach (no numpy required).
+Finds optimal pillar weights using walk-forward validation against historical data.
+Pure stdlib — no numpy or scipy required.
 
 Usage:
     # Grid search over pillar weights
     python3 scripts/weight_optimizer.py --mode grid \
         --input history.json --output best_weights.json
 
-    # Gradient-free optimization with Sharpe ratio target
+    # Random search with Sharpe ratio target
     python3 scripts/weight_optimizer.py --mode optimize \
         --input history.json --target-sharpe 1.5 --iterations 500
-
-Stdlib only (uses scipy.optimize if available, falls back to random search).
 """
 from __future__ import annotations
 
@@ -58,23 +55,6 @@ def calculate_sharpe(returns: list[float], risk_free_rate: float = 0.0) -> Optio
     # Annualize (daily returns assumption)
     annualized_sharpe = (mean_return / std_return) * math.sqrt(252)
     return round(annualized_sharpe, 4)
-
-
-def calculate_max_drawdown(equity_curve: list[float]) -> float:
-    """Calculate maximum drawdown from an equity curve."""
-    if not equity_curve or len(equity_curve) < 2:
-        return 0.0
-
-    peak = equity_curve[0]
-    max_dd = 0.0
-
-    for value in equity_curve:
-        if value > peak:
-            peak = value
-        dd = (peak - value) / peak if peak != 0 else 0.0
-        max_dd = max(max_dd, dd)
-
-    return round(max_dd * 100, 2)
 
 
 def simulate_portfolio(
@@ -130,23 +110,32 @@ def simulate_portfolio(
             position_size = 0
             trade_count += 1
 
-        # Calculate current equity
+        # Calculate current equity (equity_curve and daily_returns stay in sync)
         if position_size > 0:
             equity_curve.append(position_size * price)
+            if len(equity_curve) >= 2:
+                prev = equity_curve[-2]
+                curr = equity_curve[-1]
+                ret = (curr - prev) / prev if prev != 0 else 0.0
+                daily_returns.append(ret)
         else:
-            daily_returns.append(0.0)
-            continue
-
-        if len(equity_curve) >= 2:
-            prev = equity_curve[-2]
-            curr = equity_curve[-1]
-            ret = (curr - prev) / prev if prev != 0 else 0.0
-            daily_returns.append(ret)
+            # Mark cash position when flat
+            equity_curve.append(capital)
+            if len(equity_curve) >= 2:
+                prev = equity_curve[-2]
+                curr = equity_curve[-1]
+                ret = (curr - prev) / prev if prev != 0 else 0.0
+                daily_returns.append(ret)
 
     # Close any open position at the end
     if position_size > 0 and history:
         capital = position_size * history[-1]["close"]
         equity_curve.append(capital)
+        if len(equity_curve) >= 2:
+            prev = equity_curve[-2]
+            curr = equity_curve[-1]
+            ret = (curr - prev) / prev if prev != 0 else 0.0
+            daily_returns.append(ret)
 
     return equity_curve, daily_returns, trade_count
 
@@ -165,7 +154,8 @@ def grid_search(
     best_equity_curve = [10000.0]
 
     step = 0.1
-    weights_range = [round(i * step, 2) for i in range(1, int(0.6 / step) + 1)]
+    # Use round() instead of int() to avoid floating-point truncation dropping the upper bound
+    weights_range = [round(i * step, 2) for i in range(1, round(0.6 / step) + 1)]
 
     combinations = 0
     for w_trend in weights_range:
@@ -203,7 +193,7 @@ def grid_search(
         best_weights=best_weights,
         sharpe_ratio=round(best_sharpe, 4),
         total_return=round(total_return, 2),
-        max_drawdown=calculate_maxdrawdown(best_equity_curve),
+        max_drawdown=calculate_max_drawdown(best_equity_curve),
         win_rate=0.0,  # Would need tick-level data
         trades_analyzed=combinations,
         notes=[f"Tested {combinations} weight combinations"],
@@ -264,14 +254,14 @@ def random_search(
         best_weights=best_weights,
         sharpe_ratio=round(best_sharpe, 4),
         total_return=round(total_return, 2),
-        max_drawdown=calculate_maxdrawdown(equity_curve),
+        max_drawdown=calculate_max_drawdown(equity_curve),
         win_rate=0.0,
         trades_analyzed=iterations,
         notes=[f"Searched {iterations} random combinations", f"Best Sharpe: {best_sharpe:.4f}"],
     )
 
 
-def calculate_maxdrawdown(equity_curve: list[float]) -> float:
+def calculate_max_drawdown(equity_curve: list[float]) -> float:
     """Calculate maximum drawdown from equity curve."""
     if not equity_curve or len(equity_curve) < 2:
         return 0.0

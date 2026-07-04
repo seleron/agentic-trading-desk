@@ -43,7 +43,9 @@ def fetch_ohlcv(
     """
     import ccxt
 
-    exchange_class = getattr(ccxt, exchange_name, None)
+    # ccxt exchange ids are lowercase (ccxt.binance), but the CLI/docs pass names
+    # like "BINANCE" — normalize so uppercase input doesn't always ValueError.
+    exchange_class = getattr(ccxt, exchange_name.lower(), None)
     if exchange_class is None:
         raise ValueError(f"Unknown exchange: {exchange_name}. Available: {ccxt.exchanges}")
 
