@@ -1,6 +1,5 @@
 # Agentic Trading Desk — Configuration
-# All weights and parameters for the three-pillar framework.
-# Modify these to tune sensitivity; optimizer will find optimal values.
+# All weights and parameters for the three-pillar framework + BIST AI Trader v1.0
 
 pillar_weights:
   trend: 0.40
@@ -48,3 +47,46 @@ data_fetcher:
   default_timeframe: "1d"
   max_bars: 500
   fallback_bars: 300
+
+# ── BIST AI Trader v1.0 Settings ─────────────────────────────────────────────
+
+scoring:
+  threshold: 80
+  top_n: 2
+  component_weights:
+    trend: 25
+    momentum: 20
+    volume: 15
+    ema_structure: 15
+    pivot_position: 10
+    volatility: 10
+    technical_summary: 5
+
+scoring_penalties:
+  rsi_overbought_max: 80
+  rsi_oversold_max: 35
+  volume_low_mult: 0.6
+  ema20_below_ema50_penalty: 20
+
+data:
+  exchange: "mexc"
+  symbols_file: null
+  symbols: []
+  timeframe: "1d"
+
+selection:
+  min_score_for_trade: 80
+  max_picks: 2
+
+notifications:
+  strong_buy_min: 85
+  watchlist_min: 70
+  no_trade_max: 69
+
+eod:
+  db_path: "data/trades.db"
+  report_time: "18:10"
+
+learning:
+  min_trades_for_analysis: 50
+  auto_adjust_weights: true

@@ -49,6 +49,11 @@ graph TD
 *   **[scripts/trade_plan.py](scripts/trade_plan.py)**: Structured trade plan generator — entry/stop/targets with position sizing and risk management.
 *   **[scripts/weight_optimizer.py](scripts/weight_optimizer.py)**: Hyperopt-style weight optimizer — grid/random search for optimal pillar weights.
 *   **[scripts/backtest.py](scripts/backtest.py)**: Walk-forward backtesting engine — Sharpe, Sortino, max drawdown, profit factor metrics.
+*   **[scripts/scoring_engine.py](scripts/scoring_engine.py)**: 7-component scoring engine for BIST AI Trader v1.0 (Trend/Momentum/Volume/EMA/Pivot/Volatility/Tech Summary + penalties).
+*   **[scripts/notification_router.py](scripts/notification_router.py)**: Tiered alert system — strong buy / watchlist / no-trade based on score thresholds.
+*   **[scripts/eod_module.py](scripts/eod_module.py)**: End-of-Day PnL tracking with SQLite database — win rates, drawdowns, trade logs.
+*   **[scripts/learning_module.py](scripts/learning_module.py)**: Auto-weight adjustment every 50 trades — analyzes feature performance and recommends weight updates.
+*   **[scripts/orchestrator.py](scripts/orchestrator.py)**: Full pipeline orchestrator — chains all modules for daily automated BIST scans.
 
 ---
 
@@ -305,3 +310,80 @@ To complement the purely technical nature of the deterministic scripts, the AI a
     *   **Individual** (Margin Account): Core passive long-term investing.
 3.  **T+1 Liquidity**: In the cash account, only settled capital counts as buying power before placing buy orders.
 4.  **Mandatory Confirmation**: Every order proposed by the bot must pass through a simulation check with `review_*_order` and be approved by the user before executing `place_*_order`.
+
+---
+
+## 🧠 BIST AI Trader v1.0 — Full Autonomous Agent Pipeline
+
+A separate pipeline for Bursa Istanbul (BIST) stock analysis, per the v1.0 spec: every trading day at 08:45, scan BIST50 stocks → compute technical features → score each on a 0–100 scale → select top 2 → generate trade plans → end-of-day PnL tracking → auto-weight optimization every 50 trades.
+
+### Architecture
+
+```
+Data Collector (ccxt)
+    ↓ Feature Engine (RSI/MACD/EMA/Pivot/Volume per symbol)
+        ↓ Scoring Engine (7-component weighted formula + penalties)
+            ↓ Selection Engine (Top-2 picks, NO TRADE DAY fallback)
+                ↓ Trade Plan Generator (entry/stop/target/risk-reward JSON)
+                    ↓ Notification Router (tiered: strong buy / watchlist / no-trade)
+                        ↓ EOD Module (PnL database, win-rate tracking)
+                            ↓ Learning Module (auto-weight adjustment after 50 trades)
+```
+
+### New Scripts
+
+| Script | Purpose |
+|--------|---------|
+| `scoring_engine.py` | 7-component scoring: Trend(25)+Momentum(20)+Volume(15)+EMA Structure(15)+Pivot Position(10)+Volatility(10)+Technical Summary(5). Penalty system for RSI extremes, low volume, bearish EMA. |
+| `notification_router.py` | Tiered alerts: >85 = strong buy signal, 70–85 = watchlist, <70 = no trade. |
+| `eod_module.py` | End-of-Day PnL tracking via SQLite database. Records entry/exit/PnL/win-rate per symbol per date. Generates daily performance reports. |
+| `learning_module.py` | Every 50 completed trades: analyzes which features (RSI range, EMA structure, volume spike) produce best outcomes and recommends weight adjustments. |
+| `orchestrator.py` | Full pipeline orchestrator — chains all modules in one run. Use for daily automated scans. |
+
+### Usage
+
+```bash
+# Full daily scan (runs all 7 stages)
+python3 scripts/orchestrator.py \
+    --symbols EREGL.IS TUPRS.IS GARAN.IS THYAO.IS \
+    --output-dir ./outputs/
+
+# Scoring engine standalone (for testing)
+echo '[{"symbol":"EREGL","close":42,"ema20":41.5,"ema50":40,"rsi":62,"macd":0.3,"macd_signal":0.2,"volume":5e7,"high":42.5,"low":41}]' | python3 scripts/scoring_engine.py -i /dev/stdin
+
+# Notification routing
+python3 scripts/notification_router.py -i outputs/scores.json -o outputs/notifications.json
+
+# End-of-Day report
+python3 scripts/eod_module.py --db data/trades.db
+
+# Learning module (auto-weight adjustment)
+python3 scripts/learning_module.py --db data/trades.db
+```
+
+### Scoring Formula (7 Components, 0–100 scale)
+
+| Component | Max Points | Description |
+|-----------|------------|-------------|
+| Trend | 25 | EMA alignment + price position |
+| Momentum | 20 | RSI zone + MACD cross |
+| Volume | 15 | Volume vs 20-day average |
+| EMA Structure | 15 | Clean bullish stack + pullback entry detection |
+| Pivot Position | 10 | Support/resistance bounce opportunity |
+| Volatility | 10 | Optimal intraday range (ATR-like) |
+| Technical Summary | 5 | Candlestick patterns (hammer, strong close) |
+
+### Penalty System
+
+| Condition | Penalty |
+|-----------|---------|
+| RSI > 80 (overbought) | -10 |
+| RSI < 35 (oversold) | -10 |
+| Volume < 60% of 20-day avg | -10 |
+| EMA20 < EMA50 (bearish structure) | -20 |
+
+### Selection Logic
+
+- Stocks scoring ≥ 80 → candidate for top picks
+- Top 2 by score selected
+- Fewer than 2 qualify → "NO TRADE DAY" flag set
