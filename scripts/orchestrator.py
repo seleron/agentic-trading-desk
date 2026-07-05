@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 from datetime import date as date_type
@@ -56,8 +57,25 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
         try:
             raw = fetch_bist_data(sym)
             if not raw or len(raw) < 20:
-                print(f"  [WARN] {sym}: insufficient data ({len(raw) if raw else 0} candles)", file=sys.stderr)
-                continue
+                # Fallback to yfinance when ccxt lacks the symbol
+                import yfinance as _yf  # noqa: F811 — local block only
+                hist_yf = _yf.Ticker(sym).history(period="5y")
+                if len(hist_yf) < 20:
+                    print(f"  [WARN] {sym}: insufficient data ({len(raw) if raw else 0} candles)", file=sys.stderr)
+                    continue
+                # Convert yfinance OHLCV to ccxt-compatible dict format
+                raw = []
+                for _, row in hist_yf.iterrows():
+                    dt_str = row.name.strftime("%Y-%m-%d")
+                    raw.append({
+                        "date": dt_str,
+                        "open": float(row["Open"]),
+                        "high": float(row["High"]),
+                        "low": float(row["Low"]),
+                        "close": float(row["Close"]),
+                        "volume": int(row["Volume"]) if not math.isnan(row["Volume"]) else 0,
+                    })
+                print(f"  [INFO] {sym}: fetched via yfinance ({len(raw)} bars)", file=sys.stderr)
             # Build structured dict for this symbol
             latest = raw[-1] if isinstance(raw[-1], dict) and "close" in raw[-1] else None
             ohlcv_data[sym] = {
@@ -112,7 +130,7 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
             "volume_avg_20": volume_avg_20,
         }
 
-        # Pivot levels (computed from recent H/L)
+        # Pivot levels (Fibonacci: P, R1/S1, R2/S2)
         if len(data.get("ohlcv_all", [])) >= 20:
             recent = data["ohlcv_all"][-20:]
             high_20 = max(o["high"] for o in recent)
@@ -122,6 +140,9 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
             quote["pivot"] = pivot
             quote["r1"] = pivot + range_val * 0.382 if range_val > 0 else None
             quote["s1"] = pivot - range_val * 0.382 if range_val > 0 else None
+            # R2/S2 using Fibonacci extension (0.618)
+            quote["r2"] = pivot + range_val * 0.618 if range_val > 0 else None
+            quote["s2"] = pivot - range_val * 0.618 if range_val > 0 else None
 
         quotes.append(quote)
 
@@ -129,7 +150,33 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
     with open(os.path.join(output_dir, "scores.json"), "w") as f:
         json.dump(scores_output, f, indent=2)
 
-    # Step 4: Selection (top picks + NO TRADE DAY)
+    # Step 4b: Multi-timeframe verification — weekly trend confirmation for daily signals
+    print("[3.5/8] Running multi-timeframe analysis...")
+    from multi_timeframe import compute_single_tf_score
+
+    mtf_consensus = {}
+    for quote in quotes:
+        symbol = quote["symbol"]
+        data = ohlcv_data.get(symbol, {})
+        closes_daily = [c["close"] for c in data.get("ohlcv_all", []) if c.get("close")]
+
+        # Fetch weekly data for multi-timeframe verification (via yfinance fallback)
+        try:
+            import yfinance as _yf  # noqa: F811 — local to this block only
+            hist_wk = _yf.Ticker(symbol).history(period="5y", interval="1wk")
+            closes_weekly = [float(c) for c in hist_wk["Close"] if not math.isnan(c)] if len(hist_wk) > 0 else []
+        except Exception:
+            # If yfinance fails, use daily data as proxy (single-timeframe fallback)
+            closes_weekly = closes_daily
+
+        weekly_score = compute_single_tf_score(closes_weekly) if closes_weekly else {"score": 0}
+        mtf_consensus[symbol] = {
+            "weekly_trend_score": weekly_score.get("score", 0),
+            "daily_bullish": quote.get("close", 0) > (quote.get("ema20") or 0),
+            "weekly_bullish": weekly_score.get("score", 0) >= 5,
+        }
+
+    # Save MTF results for pipeline output
     print("[3/7] Selecting top picks...")
     from scoring_engine import select_top_picks
     threshold = config.get("scoring", {}).get("threshold", 80)
@@ -193,22 +240,42 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
     for pick in selection.get("top_picks", []):
         symbol = pick["symbol"]
         try:
-            # Fetch 5y history via ccxt (same data source as live pipeline)
-            hist_raw = fetch_bist_data(symbol, timeframe="1d", limit=450)
-            if not hist_raw or len(hist_raw) < 200:
-                print(f"  [WARN] Backtest: insufficient history for {symbol} ({len(hist_raw) if hist_raw else 0} bars)", file=sys.stderr)
-                continue
+            # Try ccxt first (same source as live pipeline), fall back to yfinance
+            hist_raw = None
+            try:
+                hist_raw = fetch_bist_data(symbol, timeframe="1d", limit=450)
+            except Exception:
+                pass  # ccxt fallback below
 
-            bars = []
-            for bar in hist_raw[:350]:  # cap at ~350 bars to keep runtime reasonable
-                bars.append({
-                    "date": bar.get("date", ""),
-                    "open": float(bar["open"]),
-                    "high": float(bar["high"]),
-                    "low": float(bar["low"]),
-                    "close": float(bar["close"]),
-                    "volume": int(bar.get("volume", 0)),
-                })
+            if not hist_raw or len(hist_raw) < 200:
+                # Fallback to yfinance for BIST symbols (ccxt lacks many Turkish stocks)
+                import yfinance as yf  # noqa: F811 — local to this block only
+
+                hist_yf = yf.Ticker(symbol).history(period="5y")
+                if len(hist_yf) < 200:
+                    print(f"  [WARN] Backtest: insufficient history for {symbol}", file=sys.stderr)
+                    continue
+                bars = []
+                for _, row in hist_yf.iterrows():
+                    bars.append({
+                        "date": row.name.strftime("%Y-%m-%d"),
+                        "open": float(row["Open"]),
+                        "high": float(row["High"]),
+                        "low": float(row["Low"]),
+                        "close": float(row["Close"]),
+                        "volume": int(row["Volume"]) if not math.isnan(row["Volume"]) else 0,
+                    })
+            else:
+                bars = []
+                for bar in hist_raw[:350]:  # cap at ~350 bars to keep runtime reasonable
+                    bars.append({
+                        "date": bar.get("date", ""),
+                        "open": float(bar["open"]),
+                        "high": float(bar["high"]),
+                        "low": float(bar["low"]),
+                        "close": float(bar["close"]),
+                        "volume": int(bar.get("volume", 0)),
+                    })
 
             result = bt_run(
                 bars=bars,
@@ -234,8 +301,9 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
         "trade_plans": trade_plans,
         "notifications_count": len(notifications),
         "eod_report": eod_report if not eod_report.get("no_trades") else None,
-        "learning_ready": learning_result.get("ready", False),
+        "mtf_verification": mtf_consensus,
         "backtest_results": backtest_results,
+        "learning_ready": learning_result.get("ready", False),
     }
 
     with open(os.path.join(output_dir, "pipeline_output.json"), "w") as f:
