@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 """
 backtest.py
-===========
 Walk-forward backtesting engine for the three-pillar framework.
-
 Runs historical simulations with realistic assumptions:
 - Slippage and commission fees
 - Position sizing (fixed fraction)
@@ -228,7 +226,7 @@ def run_backtest(
                 }
 
                 scored = score_quote(quote)
-                composite = scored.get("score", 48) / 100.0  # normalize to ~[0, 1] range
+                composite = scored.get("score", 0.48) / 100.0  # normalize to ~[0, 1] range
 
             except Exception:
                 # Fallback: simple ROC-based heuristic if scoring imports fail
