@@ -113,6 +113,7 @@ def simulate_portfolio(
         # Calculate current equity (equity_curve and daily_returns stay in sync)
         if position_size > 0:
             equity_curve.append(position_size * price)
+            capital = position_size * price  # Track mark-to-market for exit/re-enter sizing
             if len(equity_curve) >= 2:
                 prev = equity_curve[-2]
                 curr = equity_curve[-1]
@@ -127,15 +128,20 @@ def simulate_portfolio(
                 ret = (curr - prev) / prev if prev != 0 else 0.0
                 daily_returns.append(ret)
 
-    # Close any open position at the end
+    # Close any open position at the end (only if last bar wasn't already recorded)
     if position_size > 0 and history:
-        capital = position_size * history[-1]["close"]
+        final_price = history[-1]["close"]
+        capital = position_size * final_price
         equity_curve.append(capital)
         if len(equity_curve) >= 2:
             prev = equity_curve[-2]
             curr = equity_curve[-1]
             ret = (curr - prev) / prev if prev != 0 else 0.0
             daily_returns.append(ret)
+
+    # Ensure equity_curve and daily_returns have same length
+    while len(daily_returns) < len(equity_curve) - 1:
+        daily_returns.append(0.0)
 
     return equity_curve, daily_returns, trade_count
 
