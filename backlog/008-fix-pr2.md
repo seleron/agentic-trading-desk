@@ -10,10 +10,11 @@ Claude Opus 4.8 requested changes on PR #2 (round 1).
 
 ## Required fixes
 [
-  'Declare yfinance in requirements.txt — the data-collection fallback is wrapped in try/except ImportError, so without the dependency installed it silently returns raw=[] and the fallback never actually runs, making it dead code in production.',
-  'Reconcile the PR description/plan with the diff: only pivot_risk scoring + the yfinance data-collection fallback are delivered. MTF wiring into the orchestrator and the backtest.py full-engine upgrade (plan Tasks 3-5) are absent — remove those claims or deliver them.',
-  "Confirm the orchestrator actually populates quote['r2']/['s2'] (base commit bdc1020) so compute_pivot_risk_score's +2 'below R2' branch can fire; otherwise pivot_risk caps at 3/5 in practice — add or point to a scoring test that exercises the r2 branch.",
-  'Split into one concern per PR: pivot_risk scoring and the data-source fallback are two distinct changes.'
+  'Fix the failing independent gate: run the restored unittest suite locally, identify the failing test, and fix the code (do NOT weaken or delete the test to make it pass). The PR cannot merge while the gate is red.',
+  'Declare yfinance in requirements.txt — both the orchestrator fetch-fallback and the planned MTF/backtest steps import it, but it is currently undeclared so the runtime try/except silently swallows ImportError and disables the fallback. Per prior owner guidance, prefer feeding MTF/backtest bars from the existing ccxt ohlcv_data rather than adding a second undeclared provider.',
+  'Reconcile the PR with reality: the diff does not modify backtest.py and does not add the MTF (Task 3) or backtest (Task 5) orchestrator steps, yet the plan/description claim them. Either deliver those steps in this PR or strip the claims and unchecked plan tasks.',
+  "Confirm the orchestrator actually populates quote['r2']/['s2'] before compute_pivot_risk_score runs — the Task 1 pivot block that sets r2/s2 is not in this diff, so the new +2 bullish-continuation branch is currently dead code in production.",
+  'Split into one concern per PR: the pivot_risk scoring change is cleanly mergeable alone; MTF and backtest wiring should be separate PRs, each smoke-tested end-to-end against a real BIST symbol (e.g. EREGL.IS) proving non-zero results.'
 ]
 
 ## Acceptance
