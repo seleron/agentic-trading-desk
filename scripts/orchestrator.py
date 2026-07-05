@@ -78,18 +78,44 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
                 print(f"  [INFO] {sym}: fetched via yfinance ({len(raw)} bars)", file=sys.stderr)
             # Build structured dict for this symbol
             latest = raw[-1] if isinstance(raw[-1], dict) and "close" in raw[-1] else None
-            ohlcv_data[sym] = {
-                "ohlcv_all": raw,
-                "latest": latest,
-                "indicators": {},  # populated below by feature engine
-            }
         except Exception as e:
-            print(f"  [WARN] {sym}: fetch failed ({e})", file=sys.stderr)
+            print(f"  [WARN] {sym}: ccxt fetch failed ({e})", file=sys.stderr)
+            # Try yfinance fallback when ccxt raises an exception
+            try:
+                import yfinance as _yf  # noqa: F811 — local block only
+                hist_yf = _yf.Ticker(sym).history(period="5y")
+                if len(hist_yf) >= 20:
+                    raw = []
+                    for _, row in hist_yf.iterrows():
+                        dt_str = row.name.strftime("%Y-%m-%d")
+                        raw.append({
+                            "date": dt_str,
+                            "open": float(row["Open"]),
+                            "high": float(row["High"]),
+                            "low": float(row["Low"]),
+                            "close": float(row["Close"]),
+                            "volume": int(row["Volume"]) if not math.isnan(row["Volume"]) else 0,
+                        })
+                    print(f"  [INFO] {sym}: fetched via yfinance ({len(raw)} bars)", file=sys.stderr)
+                else:
+                    raw = []
+            except Exception as e2:
+                raw = []
+
+        if not raw or len(raw) < 20:
+                print(f"  [WARN] {sym}: insufficient data ({len(raw) if raw else 0} bars)", file=sys.stderr)
+                continue
+
+        # Build structured dict for this symbol (after successful fetch from either source)
+        latest = raw[-1] if isinstance(raw[-1], dict) and "close" in raw[-1] else None
+        ohlcv_data[sym] = {
+            "ohlcv_all": raw,
+            "latest": latest,
+            "indicators": {},  # populated below by feature engine
+        }
 
     if not ohlcv_data:
         return {"error": "No data collected from ccxt", "symbols_checked": symbols}
-
-    # Step 2 & 3: Feature extraction + Scoring (combined)
     print("[2/7] Computing features and scoring...")
     from scoring_engine import score_quotes
     import indicators as indicators_engine
