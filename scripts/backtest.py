@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import sys
 from dataclasses import dataclass, asdict
 from typing import Optional
@@ -118,7 +119,7 @@ def calculate_max_drawdown(equity_curve: list[float]) -> tuple[float, int, int]:
 
 def run_backtest(
     bars: list[dict],
-    pillar_weights: dict,
+    pillar_weights: Optional[dict] = None,
     capital: float = 10000.0,
     commission_pct: float = 0.001,
     slippage_pct: float = 0.0005,
@@ -128,9 +129,10 @@ def run_backtest(
 
     Args:
         bars: List of dicts with 'date', 'open', 'high', 'low', 'close', 'volume'
-        pillar_weights: Dict with 'trend', 'momentum', 'macro_sentiment' keys
+        pillar_weights: Legacy dict for simplified pillar scoring (optional).
+            When None, uses full 7-component scoring_engine + indicators.
         capital: Starting capital
-        commission_pct: Commission per trade as fraction (0.1%% = 0.001)
+        commission_pct: Commission per trade as fraction (0.1% = 0.001)
         slippage_pct: Slippage per trade as fraction
 
     Returns:
@@ -139,11 +141,7 @@ def run_backtest(
     if not bars or len(bars) < 50:
         raise ValueError("Need at least 50 bars for backtesting")
 
-    # Entry/exit thresholds. Per-bar scores are in {-1, +1} and pillar weights
-    # sum to ~1.0, so composite lives in roughly [-1, +1]. Thresholds must sit
-    # inside that range or no trade ever fires (macro_score is neutral here, so
-    # the reachable max is trend_weight + momentum_weight < 1.0).
-    ENTRY_THRESHOLD = 0.5
+    ENTRY_THRESHOLD = 0.48  # slightly below max composite ~0.9 to allow entries
 
     # Initialize state
     equity = capital
@@ -167,41 +165,41 @@ def run_backtest(
         prev_bar = bars[i - 1]
         price = bar["close"]
 
-        # Calculate composite score from pillar weights (simplified)
-        if i >= 20:
-            recent_closes = [bars[j]["close"] for j in range(max(0, i - 20), i)]
-            sma_short = sum(recent_closes[-10:]) / min(10, len(recent_closes))
-            sma_long = sum(recent_closes) / len(recent_closes)
+        # Calculate composite score — dual mode: full 7-component engine or legacy pillars
+        recent_closes = [bars[j]["close"] for j in range(max(0, i - 250), i)] if i >= 20 else []
 
-            # Simplified momentum (ROC over last 5 bars)
-            roc = (price - recent_closes[0]) / recent_closes[0] if recent_closes[0] != 0 else 0
+        if pillar_weights is not None:
+            # Legacy pillar-based scoring (simple)
+            short_hist = [c for c in recent_closes[-10:] if c]  # last 10 valid closes
+            long_hist = [c for c in recent_closes if c]          # full history
+            sma_short = sum(short_hist) / max(1, len(short_hist))
+            sma_long = sum(long_hist) / max(1, len(long_hist))
+            roc = (price - recent_closes[0]) / recent_closes[0] if recent_closes and recent_closes[0] != 0 else 0
 
             trend_score = 1.0 if sma_short > sma_long else -1.0
             mom_score = 1.0 if roc > 0 else -1.0
-            macro_score = 0  # Simplified: neutral macro for backtest
+            macro_score = 0
 
-            # Accept both "macro_sentiment" and the CLI's "macro" alias.
             w_trend = pillar_weights.get("trend", 0.4)
             w_mom = pillar_weights.get("momentum", 0.35)
             w_macro = pillar_weights.get("macro_sentiment", pillar_weights.get("macro", 0.25))
 
-            composite = (
-                w_trend * trend_score +
-                w_mom * mom_score +
-                w_macro * macro_score
-            )
+            composite = (w_trend * trend_score + w_mom * mom_score + w_macro * macro_score)
         else:
             # Full 7-component scoring via indicators + scoring_engine — standalone mode
             try:
-                import os as _os
                 import sys as _sys
-                _p = _os.path.dirname(_os.path.abspath(__file__))
+                _p = os.path.dirname(os.path.abspath(__file__))
                 if _p not in _sys.path:
                     _sys.path.insert(0, _p)
                 from indicators import compute as ind_compute  # noqa: F811
-                from scoring_engine import score_quote  # noqa: F811
+                from scoring_engine import (  # noqa: F811
+                    score_quote, compute_trend_score,
+                    compute_momentum_score, compute_volume_score,
+                    compute_ema_structure_score, compute_pivot_score,
+                    compute_volatility_score, compute_technical_summary_score,
+                )
 
-                recent_closes = [bars[j]["close"] for j in range(max(0, i - 20), i)]
                 closes_hist = [bars[j]["close"] for j in range(max(0, i - 250), i)]
                 ind = ind_compute(closes_hist) if len(closes_hist) >= 20 else {}
 

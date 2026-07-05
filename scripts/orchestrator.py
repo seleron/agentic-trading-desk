@@ -321,7 +321,6 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
 
             result = bt_run(
                 bars=bars,
-                pillar_weights=pillar_weights,
                 capital=10000.0,
             )
 
@@ -343,11 +342,9 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
         "selection": selection,
         "trade_plans": trade_plans,
         "notifications_count": len(notifications),
-        "mtf_verification": mtf_consensus,
+       "mtf_verification": mtf_consensus,
         "backtest_results": backtest_results,
         "eod_report": eod_report if not eod_report.get("no_trades") else None,
-        "mtf_verification": mtf_consensus,
-        "backtest_results": backtest_results,
         "learning_ready": learning_result.get("ready", False),
     }
 

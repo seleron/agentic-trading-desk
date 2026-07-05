@@ -26,6 +26,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import backtest
+from backtest import BacktestResult
 import eod_module
 import learning_module
 from scoring_engine import (
@@ -135,12 +136,14 @@ class TestBacktest(unittest.TestCase):
                          "low": p * 0.98, "close": p, "volume": 1_000_000})
         return bars
 
-    def test_run_backtest_requires_pillar_weights(self):
-        # Guards the orchestrator integration bug (call without weights).
-        with self.assertRaises(TypeError):
-            backtest.run_backtest(bars=self._bars())  # type: ignore[call-arg]
+    def test_run_backtest_default_score_mode(self):
+        # Without pillar_weights, backtest falls through to full 7-component scoring_engine mode.
+        result = backtest.run_backtest(
+            bars=self._bars(),
+        )
+        self.assertIsInstance(result, BacktestResult)
 
-    def test_run_backtest_produces_result(self):
+    def test_run_backtest_with_pillar_weights(self):
         r = backtest.run_backtest(
             bars=self._bars(),
             pillar_weights={"trend": 0.4, "momentum": 0.3, "macro_sentiment": 0.3},
