@@ -80,7 +80,8 @@ def simulate_portfolio(
     ]
 
     capital = initial_capital
-    equity_curve = [capital]
+    cash = initial_capital  # Track cash separately from deployed capital
+    equity_curve = [cash]
     daily_returns = []
     trade_count = 0
     position_size = 0.0
@@ -101,38 +102,34 @@ def simulate_portfolio(
         price = bar["close"]
 
         if composite >= 1.0 and position_size == 0:
-            # Enter long
-            position_size = capital * 0.95 / price
+            # Enter long — deploy capital into position, keep 5% as cash reserve
+            deployed = capital * 0.95
+            position_size = deployed / price
+            cash -= deployed
             trade_count += 1
         elif composite <= -1.0 and position_size > 0:
-            # Exit
-            capital = position_size * price
+            # Exit — sell position, return proceeds to cash
+            proceeds = position_size * price
+            cash += proceeds
             position_size = 0
             trade_count += 1
 
-        # Calculate current equity (equity_curve and daily_returns stay in sync)
-        if position_size > 0:
-            equity_curve.append(position_size * price)
-            capital = position_size * price  # Track mark-to-market for exit/re-enter sizing
-            if len(equity_curve) >= 2:
-                prev = equity_curve[-2]
-                curr = equity_curve[-1]
-                ret = (curr - prev) / prev if prev != 0 else 0.0
-                daily_returns.append(ret)
-        else:
-            # Mark cash position when flat
-            equity_curve.append(capital)
-            if len(equity_curve) >= 2:
-                prev = equity_curve[-2]
-                curr = equity_curve[-1]
-                ret = (curr - prev) / prev if prev != 0 else 0.0
-                daily_returns.append(ret)
+        # Total equity = cash + mark-to-market of open position
+        total_equity = cash + (position_size * price if position_size > 0 else 0)
+        equity_curve.append(total_equity)
+        if len(equity_curve) >= 2:
+            prev = equity_curve[-2]
+            curr = equity_curve[-1]
+            ret = (curr - prev) / prev if prev != 0 else 0.0
+            daily_returns.append(ret)
 
-    # Close any open position at the end (only if last bar wasn't already recorded)
+    # Close any open position at the end
     if position_size > 0 and history:
         final_price = history[-1]["close"]
-        capital = position_size * final_price
-        equity_curve.append(capital)
+        proceeds = position_size * final_price
+        cash += proceeds
+        total_equity = cash + (position_size * final_price)
+        equity_curve.append(total_equity)
         if len(equity_curve) >= 2:
             prev = equity_curve[-2]
             curr = equity_curve[-1]
