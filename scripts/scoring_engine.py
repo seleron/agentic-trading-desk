@@ -73,8 +73,8 @@ def compute_trend_score(
             score += 5  # partial credit for bearish
 
     # Long-term trend confirmation: EMA50 > EMA200 → +10
-    if ema50 is not None and ema200 is not None and ema20 is not None:
-        if ema20 >= ema50 > ema200:
+    if ema50 is not None and ema200 is not None:
+        if ema20 is not None and ema20 >= ema50 > ema200:
             score += 10
             rationale.append("EMA50 > EMA200 long trend confirmation")
         elif ema50 > ema200:
