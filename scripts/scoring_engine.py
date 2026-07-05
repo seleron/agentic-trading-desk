@@ -35,6 +35,7 @@ COMPONENT_WEIGHTS = {
     "ema_structure": 15,
     "pivot_position": 10,
     "volatility": 10,
+    "pivot_risk": 5,
     "technical_summary": 5,
 }
 
@@ -194,6 +195,34 @@ def compute_pivot_score(
     return min(score, 10), rationale
 
 
+def compute_pivot_risk_score(
+    close: float, pivot: Optional[float], r1: Optional[float], s1: Optional[float],
+    r2: Optional[float] = None, s2: Optional[float] = None
+) -> tuple[int, list[str]]:
+    """Pivot risk scoring — max 5 points.
+
+    Close safely between S1 and R1 (not near edges) → +3
+    Close above pivot with room to R2 → +2 continuation signal
+    """
+    score = 0
+    rationale: list[str] = []
+
+    if close > 0 and pivot is not None and s1 is not None and r1 is not None:
+        margin = 0.03 * close  # 3% margin from S1/R1 edges
+
+        # Safely between S1 and R1 (not near edges)
+        if close > s1 + margin and close < r1 - margin:
+            score += 3
+            rationale.append("Safely between S1 and R1 — low pivot risk")
+
+        # Above pivot with room to R2 (bullish continuation)
+        if close > pivot and r2 is not None and close < r2 - margin:
+            score += 2
+            rationale.append(f"Above pivot, below R2({r2:.2f}) — bullish continuation zone")
+
+    return min(score, 5), rationale
+
+
 def compute_volatility_score(high: float, low: float, close: float) -> tuple[int, list[str]]:
     """Volatility scoring — max 10 points.
 
@@ -313,11 +342,16 @@ def score_quote(quote: dict) -> dict:
         volume_reasons = ["volume_avg_20 missing — component skipped"]
     ema_struct_score, ema_reasons = compute_ema_structure_score(close, ema20, ema50, ema200)
     pivot_score_val, pivot_reasons = compute_pivot_score(close, pivot, r1, s1)
+    r2 = quote.get("r2")
+    s2 = quote.get("s2")
+    pivot_risk_score_val, pivot_risk_reasons = compute_pivot_risk_score(
+        close, pivot, r1, s1, r2, s2
+    )
     volatility_score_val, vol_reasons = compute_volatility_score(high, low, close)
     tech_summary_score, tech_reasons = compute_technical_summary_score(close, open_price, high, low)
 
     raw_total = (trend_score + momentum_score + volume_score_val + ema_struct_score +
-                 pivot_score_val + volatility_score_val + tech_summary_score)
+                 pivot_score_val + pivot_risk_score_val + volatility_score_val + tech_summary_score)
 
     penalties, penalty_reasons = apply_penalties(
         rsi, volume, volume_avg_20 if volume_avg_20 is not None else 0.0, ema20, ema50
@@ -325,7 +359,7 @@ def score_quote(quote: dict) -> dict:
     final_score = max(0, min(100, raw_total + penalties))
 
     all_reasons = (trend_reasons + momentum_reasons + volume_reasons + ema_reasons +
-                   pivot_reasons + vol_reasons + tech_reasons + penalty_reasons)
+                   pivot_reasons + pivot_risk_reasons + vol_reasons + tech_reasons + penalty_reasons)
 
     return {
         "symbol": quote.get("symbol", "UNKNOWN"),
@@ -337,6 +371,7 @@ def score_quote(quote: dict) -> dict:
             "volume": volume_score_val,
             "ema_structure": ema_struct_score,
             "pivot_position": pivot_score_val,
+            "pivot_risk": pivot_risk_score_val,
             "volatility": volatility_score_val,
             "technical_summary": tech_summary_score,
         },
