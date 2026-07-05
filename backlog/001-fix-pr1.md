@@ -19,5 +19,16 @@ Claude Opus 4.8 requested changes on PR #1 (round 1).
 
 ## Acceptance
 Unit tests pass; fixes addressed; re-review approves.
+
+**Verification (2026-07-05):** All five review items confirmed present on branch:
+1. `compute_trend_score` wires ema200 (+10 for EMA50>EMA200) and close-above-both bonus — verified at lines 76-88 of scoring_engine.py
+2. `score_quote` defaults volume_avg_20 to None, skips component with rationale when absent — verified at lines 301-313
+3. orchestrator imports `date_type` from datetime (line 21) — verified
+4. data_fetcher exports all expected functions (_retry_with_backoff, detect_gaps, cache funcs); indicators.forward_fill has correct signature — verified
+5. Focused modules: scoring_engine, trade_plan, weight_optimizer, data_fetcher/indicators are independent concerns — verified
+
+## Status
+RESOLVED — 35/35 unit tests pass; all imports clean. No code changes needed (fixes already applied).
+
 ## Constraints
 UPDATE the existing branch `autonomous/scaffolding` (do NOT open a new PR). Do not edit test_data_quality.py.
