@@ -50,7 +50,12 @@ RSI_HEALTHY = (50, 65)    # healthy trend
 RSI_STRONG = (65, 75)     # strong momentum
 
 
-def compute_trend_score(close: float, ema20: Optional[float], ema50: Optional[float]) -> tuple[int, list[str]]:
+def compute_trend_score(
+    close: float,
+    ema20: Optional[float],
+    ema50: Optional[float],
+    ema200: Optional[float] = None,
+) -> tuple[int, list[str]]:
     """Trend scoring — max 25 points.
 
     EMA20 > EMA50 → +15 (bullish alignment)
@@ -66,6 +71,21 @@ def compute_trend_score(close: float, ema20: Optional[float], ema50: Optional[fl
             rationale.append("EMA20 > EMA50 bullish alignment")
         else:
             score += 5  # partial credit for bearish
+
+    # Long-term trend confirmation: EMA50 > EMA200 → +10
+    if ema50 is not None and ema200 is not None and ema20 is not None:
+        if ema20 >= ema50 > ema200:
+            score += 10
+            rationale.append("EMA50 > EMA200 long trend confirmation")
+        elif ema50 > ema200:
+            score += 10
+            rationale.append("EMA50 > EMA200 long-term bullish")
+
+    # Close above both EMAs → bonus (up to +10, but capped by total)
+    if close > 0 and ema20 is not None and ema50 is not None:
+        if close > ema20 > ema50:
+            score += 10
+            rationale.append(f"Close ({close:.2f}) above both EMAs")
 
     return min(score, 25), rationale
 
@@ -266,7 +286,6 @@ def score_quote(quote: dict) -> dict:
     low = quote.get("low", close)
     open_price = quote.get("open", close)
     volume = quote.get("volume", 0)
-    volume_avg_20 = quote.get("volume_avg_20", volume * 1.5)  # default: assume normal
 
     rsi = quote.get("rsi")
     macd = quote.get("macd", 0)
@@ -278,10 +297,20 @@ def score_quote(quote: dict) -> dict:
     r1 = quote.get("r1")
     s1 = quote.get("s1")
 
+    # Volume average — require explicitly; skip volume component if absent.
+    raw_volume_avg_20 = quote.get("volume_avg_20")
+    volume_avg_20: Optional[float] = None
+    if raw_volume_avg_20 is not None and raw_volume_avg_20 > 0:
+        volume_avg_20 = float(raw_volume_avg_20)
+
     # Compute each component
-    trend_score, trend_reasons = compute_trend_score(close, ema20, ema50)
+    trend_score, trend_reasons = compute_trend_score(close, ema20, ema50, ema200)
     momentum_score, momentum_reasons = compute_momentum_score(rsi, macd, macd_signal, close, ema20)
-    volume_score_val, volume_reasons = compute_volume_score(volume, volume_avg_20)
+    if volume_avg_20 is not None:
+        volume_score_val, volume_reasons = compute_volume_score(volume, volume_avg_20)
+    else:
+        volume_score_val = 0
+        volume_reasons = ["volume_avg_20 missing — component skipped"]
     ema_struct_score, ema_reasons = compute_ema_structure_score(close, ema20, ema50, ema200)
     pivot_score_val, pivot_reasons = compute_pivot_score(close, pivot, r1, s1)
     volatility_score_val, vol_reasons = compute_volatility_score(high, low, close)
@@ -290,7 +319,9 @@ def score_quote(quote: dict) -> dict:
     raw_total = (trend_score + momentum_score + volume_score_val + ema_struct_score +
                  pivot_score_val + volatility_score_val + tech_summary_score)
 
-    penalties, penalty_reasons = apply_penalties(rsi, volume, volume_avg_20, ema20, ema50)
+    penalties, penalty_reasons = apply_penalties(
+        rsi, volume, volume_avg_20 if volume_avg_20 is not None else 0.0, ema20, ema50
+    )
     final_score = max(0, min(100, raw_total + penalties))
 
     all_reasons = (trend_reasons + momentum_reasons + volume_reasons + ema_reasons +
