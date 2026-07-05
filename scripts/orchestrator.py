@@ -19,6 +19,10 @@ import os
 import sys
 from datetime import date as date_type
 
+# Allow both `python3 scripts/orchestrator.py` (scripts/ on sys.path) and
+# `python3 -m scripts.orchestrator`: ensure this dir is importable as flat modules.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 
 def load_config(config_path: str = "config.yaml") -> dict:
     """Load configuration."""
@@ -42,7 +46,7 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
 
     # Step 1: Data Collection (via ccxt)
     print("[1/7] Collecting data via ccxt...")
-    from scripts.data_fetcher import fetch_bist_data
+    from data_fetcher import fetch_bist_data
 
     symbols = config.get("data", {}).get("symbols", ["EREGL.IS", "TUPRS.IS"])
     exchange_id = config.get("data", {}).get("exchange", "mexc")
@@ -55,7 +59,7 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
                 print(f"  [WARN] {sym}: insufficient data ({len(raw) if raw else 0} candles)", file=sys.stderr)
                 continue
             # Build structured dict for this symbol
-            latest = raw[-1] if isinstance(raw[-1], dict) and "c" in raw[-1] else None
+            latest = raw[-1] if isinstance(raw[-1], dict) and "close" in raw[-1] else None
             ohlcv_data[sym] = {
                 "ohlcv_all": raw,
                 "latest": latest,
@@ -69,36 +73,51 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
 
     # Step 2 & 3: Feature extraction + Scoring (combined)
     print("[2/7] Computing features and scoring...")
-    from scripts.scoring_engine import score_quotes
+    from scoring_engine import score_quotes
+    import indicators as indicators_engine
 
     quotes = []
     for symbol, data in ohlcv_data.items():
         latest = data["latest"]
         if not latest:
             continue
+
+        # --- Feature engine: deterministic indicator stack from the close series ---
+        # (EMA 20/50/200, RSI-14 Wilder, MACD 12/26/9, TRIX, Bollinger). Populates
+        # data["indicators"] so both scoring and trade_plan consume real numbers.
+        closes = [c["close"] for c in data["ohlcv_all"] if c.get("close") is not None]
+        ind = indicators_engine.compute(closes) if len(closes) >= 20 else {}
+        data["indicators"] = ind
+
+        # Real 20-bar average volume (falls back to current volume if unavailable).
+        recent_vols = [c.get("volume") for c in data["ohlcv_all"][-20:] if c.get("volume")]
+        volume_avg_20 = (sum(recent_vols) / len(recent_vols)) if recent_vols else 0
+
         quote = {
             "symbol": symbol,
             "date": date_type.today().isoformat(),
-            "close": latest["c"],
-            "open": latest.get("o", latest["c"]),
-            "high": latest.get("h", latest["c"]),
-            "low": latest.get("l", latest["c"]),
-            "volume": latest.get("v", 0),
-            "rsi": data.get("indicators", {}).get("rsi_14"),
-            "macd": data.get("indicators", {}).get("macd"),
-            "macd_signal": data.get("indicators", {}).get("macdsignal"),
-            "ema20": data.get("indicators", {}).get("ema_20"),
-            "ema50": data.get("indicators", {}).get("ema_50"),
-            "ema200": data.get("indicators", {}).get("ema_200"),
-            "volume_avg_20": latest.get("v", 0) * 1.3 if latest.get("v") else 0,
+            "close": latest["close"],
+            "open": latest.get("open", latest["close"]),
+            "high": latest.get("high", latest["close"]),
+            "low": latest.get("low", latest["close"]),
+            "volume": latest.get("volume", 0),
+            "rsi": ind.get("rsi14"),
+            # scoring_engine guards rsi/ema for None but treats macd as numeric;
+            # default to 0 (neutral) when warmup leaves the MACD line undefined.
+            "macd": ind.get("macd_line") or 0,
+            "macd_signal": ind.get("macd_signal") or 0,
+            "ema20": ind.get("ema20"),
+            "ema50": ind.get("ema50"),
+            "ema200": ind.get("ema200"),
+            "volume_avg_20": volume_avg_20,
         }
 
         # Pivot levels (computed from recent H/L)
         if len(data.get("ohlcv_all", [])) >= 20:
             recent = data["ohlcv_all"][-20:]
-            high_20 = max(o["h"] for o in recent)
-            low_20 = min(o["l"] for o in recent)
-            pivot = (high_20 + low_20 + latest["c"]) / 3
+            high_20 = max(o["high"] for o in recent)
+            low_20 = min(o["low"] for o in recent)
+            pivot = (high_20 + low_20 + latest["close"]) / 3
             range_val = high_20 - low_20
             quote["pivot"] = pivot
             quote["r1"] = pivot + range_val * 0.382 if range_val > 0 else None
@@ -112,7 +131,7 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
 
     # Step 4: Selection (top picks + NO TRADE DAY)
     print("[3/7] Selecting top picks...")
-    from scripts.scoring_engine import select_top_picks
+    from scoring_engine import select_top_picks
     threshold = config.get("scoring", {}).get("threshold", 80)
     selection = select_top_picks(scores_output, threshold=threshold)
 
@@ -121,7 +140,7 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
 
     # Step 5: Trade Plan generation for top picks
     print("[4/7] Generating trade plans...")
-    from scripts.trade_plan import generate_trade_plan
+    from trade_plan import generate_trade_plan
     trade_plans = []
     for pick in selection.get("top_picks", []):
         symbol = pick["symbol"]
@@ -129,7 +148,14 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
             continue
         plan = generate_trade_plan(
             symbol=symbol,
-            decision={"signal": "BUY", "score": pick["score"]},
+            # trade_plan detects long entries by keyword in `action` ("RE-ENTRY" /
+            # "TACTICAL REBOUND"); a top-pick BUY maps to RE-ENTRY so a real plan
+            # is produced instead of a no_trade stub.
+            decision={
+                "action": "RE-ENTRY",
+                "score": pick["score"],
+                "rationale": "; ".join(pick.get("rationale", [])),
+            },
             indicators=ohlcv_data[symbol].get("indicators", {}),
         )
         trade_plans.append(plan)
@@ -139,7 +165,7 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
 
     # Step 6: Notification routing
     print("[5/7] Routing notifications...")
-    from scripts.notification_router import route_notifications
+    from notification_router import route_notifications
     all_scores = scores_output if isinstance(scores_output, list) else [scores_output]
     notifications = route_notifications(all_scores, selection)
 
@@ -148,13 +174,13 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
 
     # Step 7: EOD report (if we have existing trades in DB)
     print("[6/7] Generating EOD report...")
-    from scripts.eod_module import generate_eod_report
+    from eod_module import generate_eod_report
     db_path = config.get("eod", {}).get("db_path", "data/trades.db")
     eod_report = generate_eod_report(db_path, date_type.today().isoformat())
 
     # Step 8: Learning module check (every run)
     print("[7/7] Checking learning module...")
-    from scripts.learning_module import analyze_trades
+    from learning_module import analyze_trades
     min_trades = config.get("learning", {}).get("min_trades", 50)
     learning_result = analyze_trades(db_path, min_trades=min_trades)
 
@@ -190,7 +216,7 @@ def main() -> int:
         return 1
 
     if args.symbols:
-        config["data"]["symbols"] = args.symbols
+        config.setdefault("data", {})["symbols"] = args.symbols
 
     result = run_full_pipeline(config, args.output_dir)
 

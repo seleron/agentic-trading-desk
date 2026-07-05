@@ -3,6 +3,7 @@
 # Mirrors Adverts-Project pattern: Tier 1 = review-fix items on open PR branches (Rank 0),
 # Tier 2 = ranked feature items sorted by rank then filename.
 
+export PATH="$HOME/.local/bin:$PATH"
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")/../../" && pwd)"
@@ -22,13 +23,25 @@ trap "rm -f $PRIORITY_FILE" EXIT
 if [ -n "$OPEN_BRANCHES" ]; then
     for pr_line in $OPEN_BRANCHES; do
         pr_num=$(echo "$pr_line" | awk '{print $1}')
-        # Check if a fix file exists for this PR
-        fix_file="$BACKLOG_DIR/$(ls "$BACKLOG_DIR"/ 2>/dev/null | grep "fix-pr${pr_num}" || true)"
+        # Check if a fix file exists for this PR — try local first, then origin/main
+        fix_file=""
+        fix_local="$BACKLOG_DIR/$(ls "$BACKLOG_DIR"/ 2>/dev/null | grep "fix-pr${pr_num}" || true)"
+        [ -n "$fix_local" ] && [ -f "$fix_local" ] && fix_file="$fix_local"
+        # Also check origin/main (where pr-review.sh files fix items)
+        if [ -z "$fix_file" ]; then
+            fix_remote=$(git ls-tree --name-only -r "origin/main" 2>/dev/null | grep "backlog/.*fix-pr${pr_num}" || true)
+            if [ -n "$fix_remote" ] && git cat-file -e "origin/main:$fix_remote" 2>/dev/null; then
+                fix_file="$BACKLOG_DIR/$(basename $fix_remote)"
+                # Copy it locally so the implementer can read it
+                git show "origin/main:$fix_remote" > "$fix_file" 2>/dev/null || true
+            fi
+        fi
         if [ -n "$fix_file" ] && [ -f "$fix_file" ]; then
-            rank=$(grep -m 1 -i '^rank:' "$fix_file" 2>/dev/null | awk '{print $2}' || echo "0")
+            # Fix items always get rank 0 (highest priority per spec)
+            rank="0"
             title=$(grep -m 1 -i '^title:' "$fix_file" 2>/dev/null | sed 's/^title:\s*//' || echo "Fix PR #$pr_num")
             branch=$(grep -m 1 -i '^branch:' "$fix_file" 2>/dev/null | awk '{print $2}' || echo "")
-            echo "${rank:-0} ${fix_file#*/} $title — fix for PR#$pr_num (branch: $branch)" >> "$PRIORITY_FILE"
+            echo "${rank:-0} $fix_file $title — fix for PR#$pr_num (branch: $branch)" >> "$PRIORITY_FILE"
         fi
     done
 fi

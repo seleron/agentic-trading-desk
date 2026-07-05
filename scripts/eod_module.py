@@ -124,13 +124,15 @@ def generate_eod_report(db_path: str, report_date: str | None = None) -> dict:
             "message": f"No trades recorded for {report_date}. NO TRADE DAY confirmed.",
         }
 
-    wins = [r for r in rows if r[6] == "WIN"]  # pnl column index
-    losses = [r for r in rows if r[6] == "LOSS"]
-    open_positions = [r for r in rows if r[6] == "OPEN"]
+    # Column order (SELECT *): id=0, date=1, symbol=2, entry=3, exit=4,
+    # result=5, score=6, pnl=7, pnl_pct=8, duration_bars=9, rationale=10
+    wins = [r for r in rows if r[5] == "WIN"]
+    losses = [r for r in rows if r[5] == "LOSS"]
+    open_positions = [r for r in rows if r[5] == "OPEN"]
 
-    total_pnl = sum(r[7] for r in rows)  # pnl_pct column
-    avg_win = (sum(r[7] for r in wins) / len(wins)) if wins else 0
-    avg_loss = (sum(r[7] for r in losses) / len(losses)) if losses else 0
+    total_pnl = sum(r[8] for r in rows)  # pnl_pct column
+    avg_win = (sum(r[8] for r in wins) / len(wins)) if wins else 0
+    avg_loss = (sum(r[8] for r in losses) / len(losses)) if losses else 0
 
     report = {
         "date": report_date,
@@ -139,18 +141,18 @@ def generate_eod_report(db_path: str, report_date: str | None = None) -> dict:
         "wins": len(wins),
         "losses": len(losses),
         "open_positions": len(open_positions),
-        "win_rate": round(len(wins) / max(1, len([r for r in rows if r[6] != "OPEN"])) * 100, 1),
+        "win_rate": round(len(wins) / max(1, len([r for r in rows if r[5] != "OPEN"])) * 100, 1),
         "total_pnl_pct": round(total_pnl, 2),
         "avg_win_pct": round(avg_win, 2),
         "avg_loss_pct": round(abs(avg_loss), 2) if losses else 0,
         "trades": [
             {
-                "symbol": r[1],
+                "symbol": r[2],
                 "entry": r[3],
                 "exit": r[4],
-                "result": r[6],
+                "result": r[5],
                 "pnl_pct": r[8],
-                "score": r[5],
+                "score": r[6],
             }
             for r in rows
         ],
@@ -158,7 +160,7 @@ def generate_eod_report(db_path: str, report_date: str | None = None) -> dict:
 
     if open_positions:
         report["open_positions_detail"] = [
-            {"symbol": r[1], "entry": r[3]} for r in open_positions
+            {"symbol": r[2], "entry": r[3]} for r in open_positions
         ]
 
     return report

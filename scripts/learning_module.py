@@ -46,9 +46,11 @@ def analyze_trades(db_path: str, min_trades: int = 50) -> dict:
 
     # Group by score bracket
     win_by_score_bracket = {}  # e.g., {"80-90": {"wins": 3, "total": 5}}
+    # Column order (SELECT *): id=0, date=1, symbol=2, entry=3, exit=4,
+    # result=5, score=6, pnl=7, pnl_pct=8, duration_bars=9, rationale=10
     for r in rows:
-        score = r[5]
-        result = r[6]  # WIN/LOSS/BREAKEVEN
+        score = r[6]
+        result = r[5]  # WIN/LOSS/BREAKEVEN
         bracket = (score // 10) * 10
         key = f"{bracket}-{bracket + 9}"
 
@@ -66,11 +68,11 @@ def analyze_trades(db_path: str, min_trades: int = 50) -> dict:
             bracket_win_rates[bracket] = round(wr, 1)
 
     # Analyze score vs outcome correlation (simplified — needs rationale parsing for full feature analysis)
-    win_trades = [r for r in rows if r[6] == "WIN"]
-    loss_trades = [r for r in rows if r[6] == "LOSS"]
+    win_trades = [r for r in rows if r[5] == "WIN"]
+    loss_trades = [r for r in rows if r[5] == "LOSS"]
 
-    avg_win_score = sum(r[5] for r in win_trades) / len(win_trades) if win_trades else 0
-    avg_loss_score = sum(r[5] for r in loss_trades) / len(loss_trades) if loss_trades else 0
+    avg_win_score = sum(r[6] for r in win_trades) / len(win_trades) if win_trades else 0
+    avg_loss_score = sum(r[6] for r in loss_trades) / len(loss_trades) if loss_trades else 0
 
     # Score separation: higher gap means scoring system is predictive
     score_separation = round(avg_win_score - avg_loss_score, 1)
@@ -78,7 +80,7 @@ def analyze_trades(db_path: str, min_trades: int = 50) -> dict:
     # Weight adjustment recommendations (heuristic)
     adjustments = []
 
-    if bracket_win_rates.get("90-99", {}).get("total", 0) > 0:
+    if win_by_score_bracket.get("90-99", {}).get("total", 0) > 0:
         wr_90 = win_by_score_bracket["90-99"]["wins"] / win_by_score_bracket["90-99"]["total"] * 100
         if wr_90 >= 65:
             adjustments.append({

@@ -2,6 +2,7 @@
 # Health check for agentic-trading-desk autonomous loop
 # Checks: repo state, last run time, PR status
 
+export PATH="$HOME/.local/bin:$PATH"
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
