@@ -83,7 +83,7 @@ def compute_trend_score(
 
     # Close above both EMAs → bonus (up to +10, but capped by total)
     if close > 0 and ema20 is not None and ema50 is not None:
-        if close > ema20 > ema50:
+        if close > ema20 and close > ema50:
             score += 10
             rationale.append(f"Close ({close:.2f}) above both EMAs")
 
