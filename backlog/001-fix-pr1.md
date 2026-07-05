@@ -10,10 +10,9 @@ Claude Opus 4.8 requested changes on PR #1 (round 1).
 
 ## Required fixes
 [
-  'Split into focused, single-concern PRs (scoring_engine, trade_plan, weight_optimizer, data-quality/cache+tests) so each is independently reviewable and revertible — this bundling is the primary blocker.',
-  'Confirm orchestrator.py actually binds the name used at runtime (e.g. `from datetime import date as date_type` for `date_type.today()`); an unbound name will crash the pipeline summary and it is not shown in the diff.',
-  'Confirm data_fetcher.py truly exports _retry_with_backoff, detect_gaps, forward_fill, _cache_dir/_cache_key/get_cached_data/save_cached_data with the exact signatures test_data_quality.py assumes (retries=, backoffs=, retryable_exceptions=, ttl_seconds=, max_gap=, max_gap_seconds=), and that forward_fill lives where indicators.py imports it from — these definitions are outside the shown diff.',
-  "In trade_plan.generate_trade_plan, is_short_entry is hardcoded False so the entire `direction=='short'` path in calculate_targets/calculate_position_size is dead; either wire short entries through from the decision or drop the unreachable branch to avoid untested code."
+  'weight_optimizer.simulate_portfolio: on entry `position_size = capital*0.95/price` but `capital` is never reduced by the deployed amount, and on exit `capital = position_size*price` recovers only the 95% invested — the 5% cash sleeve is silently dropped and the entry bar shows a fake ~-5% return. Track cash and position value together so equity = cash + position_size*price on every bar; otherwise the optimizer optimizes against a corrupted equity curve.',
+  "trade_plan.generate_trade_plan: `is_short_entry` is hardcoded `False`, so the entire `direction=='short'` branch in calculate_targets/calculate_position_size is unreachable, untested dead code. Either wire short entries through from `decision['action']`, or delete the short branches until they're actually driven.",
+  'Split into focused single-concern PRs (scoring_engine, trade_plan, weight_optimizer, data-quality/cache+tests) so each is independently reviewable and revertible — the 28-file bundle is the primary structural blocker.'
 ]
 
 ## Acceptance
