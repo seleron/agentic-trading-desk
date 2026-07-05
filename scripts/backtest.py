@@ -193,7 +193,47 @@ def run_backtest(
                 w_macro * macro_score
             )
         else:
-            composite = 0
+            # Full 7-component scoring via indicators + scoring_engine — standalone mode
+            try:
+                import os as _os
+                import sys as _sys
+                _p = _os.path.dirname(_os.path.abspath(__file__))
+                if _p not in _sys.path:
+                    _sys.path.insert(0, _p)
+                from indicators import compute as ind_compute  # noqa: F811
+                from scoring_engine import score_quote  # noqa: F811
+
+                recent_closes = [bars[j]["close"] for j in range(max(0, i - 20), i)]
+                closes_hist = [bars[j]["close"] for j in range(max(0, i - 250), i)]
+                ind = ind_compute(closes_hist) if len(closes_hist) >= 20 else {}
+
+                vol_recent = [bars[j].get("volume", 0) for j in range(max(1, i - 20), i)]
+                volume_avg_20 = (sum(vol_recent) / len(vol_recent)) if vol_recent else 0
+
+                quote = {
+                    "symbol": "__bt__",
+                    "date": bars[i].get("date", ""),
+                    "close": price,
+                    "open": bars[i]["open"],
+                    "high": bar["high"],
+                    "low": bar["low"],
+                    "volume": bars[i].get("volume", 0),
+                    "rsi": ind.get("rsi14"),
+                    "macd": ind.get("macd_line") or 0,
+                    "macd_signal": ind.get("macd_signal") or 0,
+                    "ema20": ind.get("ema20"),
+                    "ema50": ind.get("ema50"),
+                    "ema200": ind.get("ema200"),
+                    "volume_avg_20": volume_avg_20,
+                }
+
+                scored = score_quote(quote)
+                composite = scored.get("score", 48) / 100.0  # normalize to ~[0, 1] range
+
+            except Exception:
+                # Fallback: simple ROC-based heuristic if scoring imports fail
+                roc = (price - recent_closes[0]) / recent_closes[0] if recent_closes and recent_closes[0] != 0 else 0
+                composite = max(-1.0, min(1.0, roc * 5))
 
         # Entry signal: composite score crosses above threshold
         if not in_position and composite >= ENTRY_THRESHOLD:

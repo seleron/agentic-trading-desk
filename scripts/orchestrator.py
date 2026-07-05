@@ -184,16 +184,58 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
     min_trades = config.get("learning", {}).get("min_trades", 50)
     learning_result = analyze_trades(db_path, min_trades=min_trades)
 
-    # Final assembly
+    # Step 7b: Backtesting for top picks — run historical walk-forward on selected symbols
+    print("[7/8] Running backtests on historical data...")
+    from backtest import run_backtest as bt_run, BacktestResult
+
+    backtest_results = []
+
+    for pick in selection.get("top_picks", []):
+        symbol = pick["symbol"]
+        try:
+            # Fetch 5y history via ccxt (same data source as live pipeline)
+            hist_raw = fetch_bist_data(symbol, timeframe="1d", limit=450)
+            if not hist_raw or len(hist_raw) < 200:
+                print(f"  [WARN] Backtest: insufficient history for {symbol} ({len(hist_raw) if hist_raw else 0} bars)", file=sys.stderr)
+                continue
+
+            bars = []
+            for bar in hist_raw[:350]:  # cap at ~350 bars to keep runtime reasonable
+                bars.append({
+                    "date": bar.get("date", ""),
+                    "open": float(bar["open"]),
+                    "high": float(bar["high"]),
+                    "low": float(bar["low"]),
+                    "close": float(bar["close"]),
+                    "volume": int(bar.get("volume", 0)),
+                })
+
+            result = bt_run(
+                bars=bars,
+                capital=10000.0,
+            )
+
+            backtest_results.append({
+                "symbol": symbol,
+                "total_return_pct": round(result.total_return_pct, 2),
+                "sharpe_ratio": round(result.sharpe_ratio, 4) if result.sharpe_ratio is not None else None,
+                "max_drawdown_pct": round(result.max_drawdown_pct, 2),
+                "win_rate_pct": round(result.win_rate_pct, 2),
+                "total_trades": result.total_trades,
+            })
+        except Exception as e:
+            print(f"  [WARN] Backtest failed for {symbol}: {e}", file=sys.stderr)
+
     pipeline_output = {
-        "date": date_type.today().isoformat(),
-        "exchange": exchange_id,
+    "date": date_type.today().isoformat(),
+    "exchange": exchange_id,
         "symbols_scanned": len(quotes),
         "selection": selection,
         "trade_plans": trade_plans,
         "notifications_count": len(notifications),
         "eod_report": eod_report if not eod_report.get("no_trades") else None,
         "learning_ready": learning_result.get("ready", False),
+        "backtest_results": backtest_results,
     }
 
     with open(os.path.join(output_dir, "pipeline_output.json"), "w") as f:
