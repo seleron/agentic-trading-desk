@@ -10,10 +10,10 @@ Claude Opus 4.8 requested changes on PR #2 (round 1).
 
 ## Required fixes
 [
-  "Reconcile the PR/plan with reality: the diff does not modify backtest.py and does not add the MTF (Task 3) or backtest (Task 5) orchestrator steps — either deliver them or strip those claims and the plan's unchecked tasks from this PR.",
-  "Declare yfinance in requirements.txt if the data-collection fallback is meant to function; as-is an ImportError silently disables the fallback, defeating its purpose. Per the owner's prior guidance, prefer feeding MTF/backtest bars from the existing ccxt ohlcv_data rather than adding a second undeclared provider.",
-  "Confirm quote['r2']/['s2'] are actually populated by the orchestrator before compute_pivot_risk_score can award its +2; the orchestrator pivot block that sets r2/s2 (plan Task 1) is not in this diff, so the new component's bullish-continuation branch is currently dead.",
-  'Split into one concern per PR — the pivot_risk scoring change is cleanly mergeable on its own; the MTF/backtest work should be separate PRs once implemented and smoke-tested against a real BIST symbol (EREGL.IS).'
+  'Declare yfinance in requirements.txt — the data-collection fallback is wrapped in try/except ImportError, so without the dependency installed it silently returns raw=[] and the fallback never actually runs, making it dead code in production.',
+  'Reconcile the PR description/plan with the diff: only pivot_risk scoring + the yfinance data-collection fallback are delivered. MTF wiring into the orchestrator and the backtest.py full-engine upgrade (plan Tasks 3-5) are absent — remove those claims or deliver them.',
+  "Confirm the orchestrator actually populates quote['r2']/['s2'] (base commit bdc1020) so compute_pivot_risk_score's +2 'below R2' branch can fire; otherwise pivot_risk caps at 3/5 in practice — add or point to a scoring test that exercises the r2 branch.",
+  'Split into one concern per PR: pivot_risk scoring and the data-source fallback are two distinct changes.'
 ]
 
 ## Acceptance
