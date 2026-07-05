@@ -10,11 +10,11 @@ Claude Opus 4.8 requested changes on PR #2 (round 1).
 
 ## Required fixes
 [
-  "Do not re-fetch data from yfinance: the pipeline's real source is ccxt via fetch_bist_data, and full history is already in `ohlcv_data`. Feed MTF weekly/daily and the backtest bars from that existing data (or from data_fetcher) instead of a second, undeclared provider.",
-  'If yfinance must be used, add it to requirements.txt AND wrap the `import yfinance as yf` in the backtest block (line ~230) in try/except so an ImportError degrades gracefully (skip backtests) rather than crashing the whole pipeline after all prior steps succeeded.',
-  "Reconcile the PR description with reality: backtest.py is unchanged, so the claim 'Upgraded backtest.py to use the full 7-component scoring_engine' is false — either implement plan Task 4 or remove that claim.",
-  "Confirm the MTF/backtest steps actually run end-to-end against a real BIST symbol (e.g. EREGL.IS) rather than only py_compile; the plan's Task 6 smoke test is unchecked.",
-  'Split into one concern per PR (pivot R2/S2, MTF, backtest integration are three distinct features).'
+  'Fix the key mismatch in backtest.py:229 — score_quote returns "score" (0–100), not "total_score"; use scored.get("score", 0)/100.0 (and confirm the [0,1] normalization matches ENTRY_THRESHOLD 0.48) so full-engine backtests actually generate trades instead of always returning composite≈0.0048.',
+  'Stop re-fetching from yfinance: full history is already in ohlcv_data and the real provider is ccxt via data_fetcher.fetch_bist_data. Feed MTF weekly/daily and the backtest bars from that existing data instead of a second, undeclared provider.',
+  'If yfinance is genuinely required, declare it in requirements.txt (it is currently undeclared) rather than relying on runtime try/except swallowing the ImportError.',
+  'Add a real end-to-end run (e.g. EREGL.IS) proving MTF consensus populates and backtests.json contains non-zero trades — py_compile alone hides the total_score/zero-trade bug.',
+  'Split into one concern per PR: pivot R2/S2, MTF verification, and backtest integration are three separate features.'
 ]
 
 ## Acceptance
