@@ -10,11 +10,10 @@ Claude Opus 4.8 requested changes on PR #2 (round 1).
 
 ## Required fixes
 [
-  'Fix the key mismatch in backtest.py:229 — score_quote returns "score" (0–100), not "total_score"; use scored.get("score", 0)/100.0 (and confirm the [0,1] normalization matches ENTRY_THRESHOLD 0.48) so full-engine backtests actually generate trades instead of always returning composite≈0.0048.',
-  'Stop re-fetching from yfinance: full history is already in ohlcv_data and the real provider is ccxt via data_fetcher.fetch_bist_data. Feed MTF weekly/daily and the backtest bars from that existing data instead of a second, undeclared provider.',
-  'If yfinance is genuinely required, declare it in requirements.txt (it is currently undeclared) rather than relying on runtime try/except swallowing the ImportError.',
-  'Add a real end-to-end run (e.g. EREGL.IS) proving MTF consensus populates and backtests.json contains non-zero trades — py_compile alone hides the total_score/zero-trade bug.',
-  'Split into one concern per PR: pivot R2/S2, MTF verification, and backtest integration are three separate features.'
+  "Reconcile the PR/plan with reality: the diff does not modify backtest.py and does not add the MTF (Task 3) or backtest (Task 5) orchestrator steps — either deliver them or strip those claims and the plan's unchecked tasks from this PR.",
+  "Declare yfinance in requirements.txt if the data-collection fallback is meant to function; as-is an ImportError silently disables the fallback, defeating its purpose. Per the owner's prior guidance, prefer feeding MTF/backtest bars from the existing ccxt ohlcv_data rather than adding a second undeclared provider.",
+  "Confirm quote['r2']/['s2'] are actually populated by the orchestrator before compute_pivot_risk_score can award its +2; the orchestrator pivot block that sets r2/s2 (plan Task 1) is not in this diff, so the new component's bullish-continuation branch is currently dead.",
+  'Split into one concern per PR — the pivot_risk scoring change is cleanly mergeable on its own; the MTF/backtest work should be separate PRs once implemented and smoke-tested against a real BIST symbol (EREGL.IS).'
 ]
 
 ## Acceptance
