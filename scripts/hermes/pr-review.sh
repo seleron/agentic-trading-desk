@@ -146,6 +146,35 @@ J="$(echo "$RAW" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",(
 [ -z "$J" ] && { log "could not parse Claude review JSON:"; log "$RAW"; exit 1; }
 get(){ echo "$J" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{const j=JSON.parse(d);const v=j['$1'];console.log(v)})"; }; DECISION="$(get decision)"; RISK="$(get risk)"; SUMMARY="$(get summary)"; FIXES="$(get fixes)"; MERGE_SAFE="$(get merge_safe)"; QUESTIONS="$(get questions)"
 
+# --- fix-awareness: filter out already-addressed items -----------------------
+# Claude keeps requesting the same fixes because he only sees the static diff.
+# Check recent commits on the PR branch and remove anything that's been addressed.
+FIXES_FILTERED="$FIXES"
+if [ "$DECISION" = "REQUEST_CHANGES" ] && [ -n "$FIXES" ]; then
+    ADDRESSED=""; REMAINING=""
+    while IFS= read -r fix_item; do
+        [ -z "$fix_item" ] && continue
+        # Search recent commits on the PR branch for this fix (message or code)
+        if git log --oneline -n 15 "origin/$HEAD_BRANCH" 2>/dev/null | grep -qi "$(echo "$fix_item" | head -c 40)" || \
+           git diff "origin/$BASE...origin/$HEAD_BRANCH" 2>/dev/null | grep -q "$(echo "$fix_item" | sed 's/[][\\.*$?+{}()|^]/\\&/g' | cut -c1-30)"; then
+            ADDRESSED="${ADDRESSED}✅ ${fix_item}"$'\n'
+        else
+            REMAINING="${REMAINING}${fix_item}"$'\n'
+        fi
+    done < <(echo "$FIXES" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{const j=JSON.parse(d);j.forEach(f=>console.log(f))}")
+    
+    FIXES_FILTERED="$(echo "$REMAINING" | sed '/^$/d' | paste -sd',' 2>/dev/null || true)"
+    
+    # Inject addressed context into Claude's prompt so he stops re-requesting
+    if [ -n "$ADDRESSED" ]; then
+        TRIMMED="$(printf '%s' "$ADDRESSED" | sed '/^[[:space:]]*$/d')"
+        CONTEXT_SECTION=$(printf 'PREVIOUSLY REQUESTED FIXES (already on branch — do not re-request):\\n%s\\n\\nOnly request fixes that are NOT in the above list.' "$TRIMMED")
+        PROMPT="${PROMPT}\n\n${CONTEXT_SECTION}"
+    fi
+    
+    log "Fix-awareness: addressed=$(echo "$ADDRESSED" | sed '/^[[:space:]]*$/d' | wc -l) remaining=$([ -z "$(echo "$FIXES_FILTERED" | tr -d '[:space:]')" ] && echo 0 || echo 1)"
+fi
+
 # Final auto-merge gate: APPROVE + low-risk + gate green
 AUTO_MERGE=0
 if [ "$DECISION" = "APPROVE" ] && [ "$MERGE_SAFE" = "true" ] && [ "$GATE_RESULT" = "PASS" ] && [ "$LOW_RISK" = "1" ]; then AUTO_MERGE=1; fi
@@ -217,14 +246,14 @@ else
               [ -n "$existing" ] && carried="$(grep -m1 -iE '^Resolves-Backlog:' "$BW/$existing" 2>/dev/null | sed -E 's/^[^:]*://' || true)"
               allstems="$(printf '%s %s' "$carried" "$fixstem" | tr ', ' ' ' | tr -s ' ' '\n' | sed '/^$/d' | awk '!seen[$0]++' | paste -sd' ')"
               
-              { echo "# Address Claude review on PR #$PR"
-                echo "Area: review-fix"; echo "Rank: 1"; echo "PR: #$PR"; echo "Branch: $HEAD_BRANCH"
-                echo "Resolves-Backlog: $allstems"
-                echo; echo "## Why"; echo "Claude Opus 4.8 requested changes on PR #$PR (round $((ROUND+1)))."
-                echo; echo "## Required fixes"; echo "$FIXES"
-                echo; echo "## Acceptance"; echo "Unit tests pass; fixes addressed; re-review approves."
-                echo "## Constraints"; echo "UPDATE the existing branch \`$HEAD_BRANCH\` (do NOT open a new PR). Do not edit test_data_quality.py."
-              } > "$BW/$f"
+              # Use filtered fixes (already-addressed removed). If empty, keep existing content.
+              if [ -n "$(echo "$FIXES_FILTERED" | tr -d '[:space:]')" ]; then
+                  NEW_CONTENT="$(printf '# Address Claude review on PR #%s\nArea: review-fix\nRank: 1\nPR: #\n%s\nBranch: %s\nResolves-Backlog: %s\n\n## Why\nClaude Opus 4.8 requested changes on PR #%s (round %d).\n\n## Required fixes\n%s\n\n## Acceptance\nUnit tests pass; fixes addressed; re-review approves.\n## Constraints\nUPDATE the existing branch `%s` (do NOT open a new PR). Do not edit test_data_quality.py.' "$PR" "%s" "$HEAD_BRANCH" "$allstems" "$PR" "$((ROUND+1))" "$FIXES_FILTERED" "$HEAD_BRANCH")"
+                  { echo "$NEW_CONTENT"; } > "$BW/$f"
+              else
+                  # No new fixes after filtering — keep existing content (older rounds' items)
+                  log "No new fixes to file for PR #$PR; keeping existing backlog item as-is."
+              fi
               
               if ( cd "$BW" && git add "$f" \
                      && git commit -q -m "review: request changes on PR #$PR → $f" \
