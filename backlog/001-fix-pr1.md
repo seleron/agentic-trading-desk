@@ -14,7 +14,8 @@ Claude Opus 4.8 requested changes on PR #1 (round 1).
   "score_quote defaults volume_avg_20 to volume*1.5 when the key is missing. That guarantees volume < avg (volume_score forced to 0) AND volume >= 0.6*avg (low-volume penalty never fires), silently zeroing the whole volume component. Require volume_avg_20 explicitly, or record a 'volume data missing' rationale and skip that component instead of fabricating an average.",
   "Verify orchestrator's `date_type` name is actually imported (e.g. `from datetime import date as date_type`) — the import is not in the shown diff and an unbound name would crash the pipeline summary at the point it prints '[PIPELINE COMPLETE]'.",
   'Confirm data_fetcher exports _retry_with_backoff, detect_gaps, _cache_dir/_cache_key/get_cached_data/save_cached_data and indicators.forward_fill with the exact signatures test_data_quality.py assumes (retries=, backoffs=, retryable_exceptions=, ttl_seconds=, max_gap_seconds=, max_gap=). The gate passing implies these exist, but the definitions are outside the truncated diff — confirm before merge.',
-  'Split into focused PRs — scoring, trade_plan, weight_optimizer, and data-quality/cache are independent concerns — to keep review and revert tractable (one concern per change).'
+  "trade_plan.generate_trade_plan: is_short_entry is hardcoded to False, so the direction=='short' branches in calculate_targets and calculate_position_size are unreachable dead code. Either wire short entries from decision['action'] (detect SHORT/SELL keywords) or delete the short branches until they are actually driven.",
+  'Split the bundle into focused single-concern PRs (scoring_engine, trade_plan, weight_optimizer, data-quality/cache+tests) so each can be reviewed and reverted independently; the 4-concern/35-file scope is a structural blocker to independent review.'
 ]
 
 ## Acceptance
@@ -37,6 +38,13 @@ RESOLVED — 35/35 unit tests pass; all imports clean. No code changes needed (f
 **Validation round 2026-07-05 (cron):** Third re-check — 35/35 tests pass in 3.7s, all five review items confirmed wired in-code (ema200 credit @ trend=25 with full reasoning chain), score_quote None vol handling verified, orchestrator date_type import present, all data_fetcher/indicators exports match test expectations. No drift from branch state.
 
 **Validation round 2026-07-06 (cron):** Re-verified — 35/35 tests pass in 3.64s, all five review items confirmed intact (ema200 credit @ trend=25 with full reasoning chain, score_quote None vol handling verified via lines 301-313, orchestrator date_type import at line 21), data_fetcher exports (_retry_with_backoff, detect_gaps, _cache_dir, _cache_key, get_cached_data, save_cached_data) all importable, indicators.forward_fill signature `(series, max_gap=10)` confirmed. No drift from branch state.
+
+**Review round 2 (2026-07-06):** Holistic re-review surfaced NEW defects beyond round 1, now fixed on branch:
+1. `scoring_engine.compute_ema_structure_score` awarded its +10 "bullish stack" bonus for `ema200>ema50>ema20` — a *down-trend*. Corrected to `ema20>ema50>ema200`; a textbook long now reaches the 80 selection threshold (was 72).
+2. `orchestrator` called `run_backtest` without the required `pillar_weights` arg → every backtest silently `TypeError`'d and was swallowed. Now passes weights from `config['backtest']`.
+3. `trade_plan` short-entry branch was dead (`is_short_entry=False`); now wired from `decision['action']` (SHORT/SELL) with a direction-aware stop (above entry for shorts).
+4. `learning_module.analyze_trades` no longer crashes on a fresh DB with no `trades` table.
+5. Added `scripts/test_pipeline.py` (16 tests) covering scoring, selection, trade_plan direction, backtest signature, EOD, and learning — modules that had zero coverage. Full suite: 51/51 pass.
 
 ## Constraints
 UPDATE the existing branch `autonomous/scaffolding` (do NOT open a new PR). Do not edit test_data_quality.py.
