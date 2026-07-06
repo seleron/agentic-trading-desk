@@ -46,7 +46,7 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
     os.makedirs(output_dir, exist_ok=True)
 
     # Step 1: Data Collection (via ccxt)
-    print("[1/7] Collecting data via ccxt...")
+    print("[1/9] Collecting data via ccxt...")
     from data_fetcher import fetch_bist_data
 
     symbols = config.get("data", {}).get("symbols", ["EREGL.IS", "TUPRS.IS"])
@@ -116,7 +116,7 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
 
     if not ohlcv_data:
         return {"error": "No data collected from ccxt", "symbols_checked": symbols}
-    print("[2/7] Computing features and scoring...")
+    print("[2/9] Computing features and scoring...")
     from scoring_engine import score_quotes
     import indicators as indicators_engine
 
@@ -177,7 +177,7 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
         json.dump(scores_output, f, indent=2)
 
     # Step 4b: Multi-timeframe verification — weekly trend confirmation for daily signals
-    print("[3.5/8] Running multi-timeframe analysis...")
+    print("[3/9] Running multi-timeframe analysis...")
     from multi_timeframe import compute_single_tf_score
 
     mtf_consensus = {}
@@ -203,7 +203,7 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
         }
 
     # Save MTF results for pipeline output
-    print("[3/7] Selecting top picks...")
+    print("[4/9] Selecting top picks...")
     from scoring_engine import select_top_picks
     threshold = config.get("scoring", {}).get("threshold", 80)
     selection = select_top_picks(scores_output, threshold=threshold)
@@ -212,7 +212,7 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
         json.dump(selection, f, indent=2)
 
     # Step 5: Trade Plan generation for top picks
-    print("[4/7] Generating trade plans...")
+    print("[5/9] Generating trade plans...")
     from trade_plan import generate_trade_plan
     trade_plans = []
     for pick in selection.get("top_picks", []):
@@ -237,7 +237,7 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
         json.dump(trade_plans, f, indent=2)
 
     # Step 6: Notification routing
-    print("[5/7] Routing notifications...")
+    print("[6/9] Routing notifications...")
     from notification_router import route_notifications
     all_scores = scores_output if isinstance(scores_output, list) else [scores_output]
     notifications = route_notifications(all_scores, selection)
@@ -246,19 +246,19 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
         json.dump(notifications, f, indent=2)
 
     # Step 7: EOD report (if we have existing trades in DB)
-    print("[6/7] Generating EOD report...")
+    print("[7/9] Generating EOD report...")
     from eod_module import generate_eod_report
     db_path = config.get("eod", {}).get("db_path", "data/trades.db")
     eod_report = generate_eod_report(db_path, date_type.today().isoformat())
 
     # Step 8: Learning module check (every run)
-    print("[7/7] Checking learning module...")
+    print("[8/9] Checking learning module...")
     from learning_module import analyze_trades
     min_trades = config.get("learning", {}).get("min_trades", 50)
     learning_result = analyze_trades(db_path, min_trades=min_trades)
 
     # Step 7b: Backtesting for top picks — run historical walk-forward on selected symbols
-    print("[7/8] Running backtests on historical data...")
+    print("[9/9] Running backtests on historical data...")
     from backtest import run_backtest as bt_run, BacktestResult
 
     backtest_results = []
@@ -303,8 +303,15 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
                         "volume": int(bar.get("volume", 0)),
                     })
 
+            # Backtest pillar weights come from config (fall back to sensible
+            # defaults matching run_backtest's expected keys).
+            bt_weights = config.get("backtest", {}).get(
+                "pillar_weights",
+                {"trend": 0.4, "momentum": 0.3, "macro_sentiment": 0.3},
+            )
             result = bt_run(
                 bars=bars,
+                pillar_weights=bt_weights,
                 capital=10000.0,
             )
 
@@ -320,8 +327,8 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
             print(f"  [WARN] Backtest failed for {symbol}: {e}", file=sys.stderr)
 
     pipeline_output = {
-    "date": date_type.today().isoformat(),
-    "exchange": exchange_id,
+        "date": date_type.today().isoformat(),
+        "exchange": exchange_id,
         "symbols_scanned": len(quotes),
         "selection": selection,
         "trade_plans": trade_plans,

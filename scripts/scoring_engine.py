@@ -145,7 +145,7 @@ def compute_ema_structure_score(
 ) -> tuple[int, list[str]]:
     """EMA structure scoring — max 15 points.
 
-    Clean bullish alignment (200 > 50 > 20 > close) → +15
+    Clean bullish alignment (close > EMA20 > EMA50 > EMA200) → +10
     Partial alignments get proportional credit.
     Close near EMA20 (< 2% deviation) → +bonus for pullback entry opportunity.
     """
@@ -153,9 +153,9 @@ def compute_ema_structure_score(
     rationale: list[str] = []
 
     if ema20 is not None and ema50 is not None and ema200 is not None:
-        if ema200 > ema50 > ema20:
+        if ema20 > ema50 > ema200:
             score += 10
-            rationale.append("Clean bullish EMA stack (200>50>20)")
+            rationale.append("Clean bullish EMA stack (20>50>200)")
 
     if ema20 is not None and close > 0:
         dev = abs(close - ema20) / close * 100

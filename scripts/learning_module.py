@@ -29,11 +29,16 @@ import sys
 def analyze_trades(db_path: str, min_trades: int = 50) -> dict:
     """Analyze trade performance by feature type. Returns weight adjustment recommendations."""
     conn = sqlite3.connect(db_path)
-    cursor = conn.execute(
-        "SELECT * FROM trades WHERE result IN ('WIN', 'LOSS') ORDER BY date"
-    )
-    rows = cursor.fetchall()
-    conn.close()
+    try:
+        cursor = conn.execute(
+            "SELECT * FROM trades WHERE result IN ('WIN', 'LOSS') ORDER BY date"
+        )
+        rows = cursor.fetchall()
+    except sqlite3.OperationalError:
+        # No trades table yet (fresh/uninitialised DB) — treat as zero trades.
+        rows = []
+    finally:
+        conn.close()
 
     if len(rows) < min_trades:
         return {

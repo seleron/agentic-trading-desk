@@ -145,9 +145,10 @@ def generate_trade_plan(
         return {"error": "No price data available"}
 
     action = decision.get("action", "")
-    is_long_entry = any(kw in action for kw in ["RE-ENTRY", "TACTICAL REBOUND"])
-    is_short_entry = False  # Extend for short-selling support
-    is_exit = any(kw in action for kw in ["EXIT", "TRIM"])
+    action_upper = action.upper()
+    is_long_entry = any(kw in action_upper for kw in ["RE-ENTRY", "TACTICAL REBOUND", "BUY", "LONG"])
+    is_short_entry = any(kw in action_upper for kw in ["SHORT", "SELL"])
+    is_exit = any(kw in action_upper for kw in ["EXIT", "TRIM"])
 
     if not is_long_entry and not is_short_entry:
         return {
@@ -160,10 +161,15 @@ def generate_trade_plan(
 
     direction = "long" if is_long_entry else "short"
 
-    # Stop loss: below recent swing low (or ATR-based)
-    bb_lower = indicators.get("bb_lower") or current_price * 0.95
+    # Stop loss: for longs, below the lower band; for shorts, above the upper band.
     atr_mult = 2.0
-    stop_loss = bb_lower - (current_price * 0.01 * atr_mult)
+    buffer = current_price * 0.01 * atr_mult
+    if direction == "long":
+        bb_lower = indicators.get("bb_lower") or current_price * 0.95
+        stop_loss = bb_lower - buffer
+    else:
+        bb_upper = indicators.get("bb_upper") or current_price * 1.05
+        stop_loss = bb_upper + buffer
 
     # Position sizing
     position_info = calculate_position_size(
@@ -210,7 +216,8 @@ def generate_trade_plan(
         },
         "stop_loss": {
             "price": round(stop_loss, 6),
-            "basis": "BB lower band + ATR buffer",
+            "basis": ("BB lower band − ATR buffer" if direction == "long"
+                      else "BB upper band + ATR buffer"),
             "distance_pct": round(abs(current_price - stop_loss) / current_price * 100, 2),
         },
         **position_info,
