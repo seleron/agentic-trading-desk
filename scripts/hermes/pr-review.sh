@@ -70,8 +70,10 @@ git worktree remove --force "$WT" >/dev/null 2>&1 || true; [ -d "$WT" ] && rm -r
 git worktree add --detach "$WT" "origin/$HEAD_BRANCH" >/dev/null 2>&1
 
 # Restore base's test files so a PR can't weaken tests to pass
-if git -C "$WT" checkout "origin/$BASE" -- scripts/test_data_quality.py 2>/dev/null; then
-    log "Running independent gate (all unittests)…"\n    GATE_LOG="$(cd "$WT" && timeout 300 python3 -m unittest scripts.test_pipeline scripts.test_data_quality scripts.test_scoring_engine 2>&1)" || true
+if git -C "$WT" checkout "origin/$BASE" -- scripts/test_data_quality.py 2>/
+v/null; then
+    log "Running independent gate (all unittests)…"
+    GATE_LOG="$(cd "$WT" && timeout 300 python3 -m unittest scripts.test_pipeline scripts.test_data_quality scripts.test_scoring_engine 2>&1)" || true
     if echo "$GATE_LOG" | grep -qE '^Ran [0-9]+ test.*OK$'; then
         GATE_RESULT="PASS"
     else
