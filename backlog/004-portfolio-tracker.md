@@ -11,12 +11,14 @@ The EOD module tracks daily PnL but doesn't track individual positions, average 
 
 ## Acceptance Criteria
 
-- [ ] New module `scripts/portfolio.py` with SQLite-backed state
-- [ ] Tracks: symbol, entry_price, quantity, avg_cost, current_pnl, unrealized_pnl_pct
-- [ ] Integrates with trade_plan.py output — can auto-create positions from approved plans
-- [ ] Supports partial fills and position scaling (add/reduce)
-- [ } Daily report includes per-position PnL + portfolio-level summary
-- [ ] Configurable max position size (% of total capital)
+- [x] New module `scripts/portfolio.py` with SQLite-backed state
+- [x] Tracks: symbol, entry_price, quantity, avg_cost, current_pnl, unrealized_pnl_pct
+- [x] Integrates with trade_plan.py output — can auto-create positions from approved plans
+- [x] Supports partial fills and position scaling (add/reduce)
+- [x] Daily report includes per-position PnL + portfolio-level summary
+- [x] Configurable max position size (% of total capital)
+
+## ✅ RESOLVED — Implemented 2026-07-08
 
 ## Constraints
 
