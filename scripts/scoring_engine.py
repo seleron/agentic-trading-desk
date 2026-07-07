@@ -2,10 +2,11 @@
 """
 scoring_engine.py
 =================
-7-component scoring engine for BIST AI Trader v1.0.
+8-component scoring engine for BIST AI Trader v1.0 (pivot_risk +5 additive).
 
-Scoring formula (from spec):
-  Score = Trend(25) + Momentum(20) + Volume(15) + EMA Structure(15) + Pivot Position(10) + Volatility(10) + Technical Summary(5)
+Scoring formula:
+  Score = Trend(22) + Momentum(18) + Volume(15) + EMA Structure(15) + Pivot Position(10) + Volatility(10) + Technical Summary(5) + pivot_risk(+5, max 5)
+  Total raw max: 105 → clamped to [0, 100] by final_score = min(100, raw_total)
 
 Penalty system:
   RSI > 80         -> -10
@@ -29,8 +30,8 @@ from typing import Optional
 # -- Scoring constants (configurable) ----------------------------------------
 
 COMPONENT_WEIGHTS = {
-    "trend": 25,
-    "momentum": 20,
+    "trend": 22,
+    "momentum": 18,
     "volume": 15,
     "ema_structure": 15,
     "pivot_position": 10,
@@ -88,7 +89,7 @@ def compute_trend_score(
             score += 10
             rationale.append(f"Close ({close:.2f}) above both EMAs")
 
-    return min(score, 25), rationale
+    return min(score, 22), rationale
 
 
 def compute_momentum_score(
@@ -119,7 +120,7 @@ def compute_momentum_score(
         score += 10
         rationale.append("MACD bullish (above signal)")
 
-    return min(score, 20), rationale
+    return min(score, 18), rationale
 
 
 def compute_volume_score(volume: float, volume_avg_20: float) -> tuple[int, list[str]]:
@@ -197,7 +198,7 @@ def compute_pivot_score(
 
 def compute_pivot_risk_score(
     close: float, pivot: Optional[float], r1: Optional[float], s1: Optional[float],
-    r2: Optional[float] = None, s2: Optional[float] = None
+    r2: Optional[float] = None
 ) -> tuple[int, list[str]]:
     """Pivot risk scoring - max 5 points.
 
@@ -343,9 +344,8 @@ def score_quote(quote: dict) -> dict:
     ema_struct_score, ema_reasons = compute_ema_structure_score(close, ema20, ema50, ema200)
     pivot_score_val, pivot_reasons = compute_pivot_score(close, pivot, r1, s1)
     r2 = quote.get("r2")
-    s2 = quote.get("s2")
     pivot_risk_score_val, pivot_risk_reasons = compute_pivot_risk_score(
-        close, pivot, r1, s1, r2, s2
+        close, pivot, r1, s1, r2
     )
     volatility_score_val, vol_reasons = compute_volatility_score(high, low, close)
     tech_summary_score, tech_reasons = compute_technical_summary_score(close, open_price, high, low)

@@ -163,8 +163,11 @@ class TestCache(unittest.TestCase):
         ]
         save_cached_data("binance", "BTC/USDT", "1d", sample_data)
 
-        # Cache exists but is too old (TTL=2 seconds, file age > 2s)
-        time.sleep(2.5)
+        # Manually set cache file mtime to 3 seconds ago so TTL check fails
+        cache_file = Path(self.tmpdir) / f"{_cache_key('binance', 'BTC/USDT', '1d')}.json"
+        old_time = time.time() - 3
+        os.utime(cache_file, (old_time, old_time))
+
         result = get_cached_data("binance", "BTC/USDT", "1d", ttl_seconds=2)
         self.assertIsNone(result)
 
@@ -475,7 +478,7 @@ class TestPivotRiskScoring(unittest.TestCase):
         """Close above pivot but R2 not provided → only +3."""
         from scoring_engine import compute_pivot_risk_score
         score, _ = compute_pivot_risk_score(
-            close=105.0, pivot=100.0, r1=110.0, s1=90.0, r2=None, s2=None
+            close=105.0, pivot=100.0, r1=110.0, s1=90.0
         )
         self.assertEqual(score, 3)
 
