@@ -54,9 +54,12 @@ if [ -n "$OPEN_BRANCHES" ]; then
 fi
 
 # --- Tier 2: Ranked Feature Items (skip resolved) -----------------------------
-for f in "$BACKLOG_DIR"/*.md; do
-    [ ! -f "$f" ] && continue
-    base=$(basename "$f")
+# Scan both main backlog/ and proposed/ subdirectories
+for dir in "$BACKLOG_DIR" "$BACKLOG_DIR/proposed"; do
+    [ ! -d "$dir" ] && continue
+    for f in "$dir"/*.md; do
+        [ ! -f "$f" ] && continue
+        base=$(basename "$f")
     
      # Skip README. Fix items are NOT skipped — they get rank 0 and sort first.
       [[ "$base" == "README.md" ]] && continue
@@ -79,7 +82,9 @@ for f in "$BACKLOG_DIR"/*.md; do
     title=$(grep -m 1 -i '^title:' "$f" 2>/dev/null | sed 's/^title:\s*//' || echo "$base")
     
     echo "${rank} ${BACKLOG_DIR}/$base $title" >> "$PRIORITY_FILE"
+    done
 done
+# Close outer for dir loop above, inner for f loop on line before that
 
 # Sort by rank (numeric), then filename (alpha). Deduplicate by filepath keeping first (Tier 1 entry preferred over Tier 2).
 DEDUPED=$(sort -k1,1n -k2,2 "$PRIORITY_FILE" | awk '!seen[$2]++')
