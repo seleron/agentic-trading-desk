@@ -24,15 +24,13 @@ Claude Opus 4.8 requested changes on PR #3 (round 1).
 \
 ## Required fixes
 \
-- ["Resolve the yfinance premise: orchestrator.py's backtest fallback does an unguarded `import yfinance as _yf` (raising ImportError at runtime whenever ccxt returns <200 bars)
--  but yfinance is not in requirements.txt — either add yfinance to requirements.txt or drop the fallback and degrade safely (skip the symbol) using only the ccxt fetch_bist_data path."
-- "Split into one concern per PR: land pivot_risk scoring alone (scoring_engine.py weight rebalance + test_scoring_engine.py + test_data_quality.py pivot tests + orchestrator r2/s2 rounding); move the intraday run_intraday_loop scanner
--  the backtest.py Optional-weights change
--  and the notification_router Telegram integration into their own separately-reviewed PRs."
-- "Reconcile the incidental orchestrator.py churn unrelated to scoring: the `# Step 3`/`# Step 4` comment relabeling and the reordering of output dict keys (mtf_verification/backtest_results/eod_report) is noise — drop it or keep it consistent."
-- "Confirm the intraday alert path re-routes notifications with the same telegram_config/trade_plans as the single-pass main() — currently run_intraday_loop calls route_notifications(curr_scores_output
--  curr_selection) with no telegram_config
--  so intraday alerts will never actually reach Telegram; wire the config through or document that this is intentional."]
+- ["Split into one concern per PR: land pivot_risk scoring alone (scoring_engine.py weight rebalance + test_scoring_engine.py + test_data_quality.py pivot tests + orchestrator r2/s2 rounding). Move the notification_router Telegram integration
+-  the new run_intraday_loop/_should_alert/_is_in_quiet_hours orchestrator additions
+-  the backtest Optional-weights change
+-  and the hermes/pr-review-poll edits into their own separate reviewed PRs."
+- "Resolve the yfinance premise in orchestrator.py: the backtest fallback still does an unguarded `import yfinance as _yf` but yfinance is not in requirements.txt — either declare it as a dependency or source history solely from the existing ccxt fetch_bist_data path so the pipeline degrades safely (warn + continue) instead of raising ImportError at runtime."
+- "Drop the incidental orchestrator noise unrelated to scoring: the `# Step 3:`/`# Step 4:` comment relabeling and the reordering of output-dict keys (mtf_verification/backtest_results/eod_report) are churn that inflates the diff and should be reverted or moved to their own PR."
+- "Confirm the pr-review-poll.sh change still enforces the `select(.headRefName == \"autonomous/scaffolding\")` branch filter so the poller does not dispatch reviews for all open PRs."]
 \
 
 \
