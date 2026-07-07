@@ -28,3 +28,11 @@ depends_on:
 - Current implementation uses ccxt's `fetch_ohlcv()` directly — wrap in retry decorator
 - Look at Adverts-Project's scrape retry patterns for inspiration
 - Indicators that fail on NaN: EMA slope calculation, TRIX
+
+## Status
+✅ **RESOLVED** — All acceptance criteria met in current codebase:
+1. ✅ Retry up to 3x with exponential backoff (`_retry_with_backoff`, lines 38-89 of data_fetcher.py; defaults: (1.0, 3.0, 9.0))
+2. ✅ Local JSON cache per ticker+timeframe with configurable TTL defaulting to 5 min (`get_cached_data`/`save_cached_data`, lines 114-170)
+3. ✅ Gap detection logging warnings for >1 day gaps (`detect_gaps`, lines 177-223)
+4. ✅ NaN-safe indicators with forward-fill and data quality warnings (`forward_fill` in indicators.py, used in `compute()` at line 259-263; returns `data_quality_warnings`)
+5. ✅ All existing tests pass (81/81 green)
