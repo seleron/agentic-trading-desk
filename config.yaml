@@ -99,3 +99,9 @@ eod:
 learning:
   min_trades_for_analysis: 50
   auto_adjust_weights: true
+
+telegram:
+  api_token: ""
+  chat_id: ""
+  quiet_hours_start: 23
+  quiet_hours_end: 6
