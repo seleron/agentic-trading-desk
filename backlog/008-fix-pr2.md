@@ -1,26 +1,23 @@
-# Address Claude review on PR #2 — resolved (rounds 1–4)
+# Address Claude review on PR #2
+Area: review-fix
+Rank: 1
+PR: #2
+Branch: feature/pivot-mtf-backtest-integration
+Resolves-Backlog: 008-fix-pr2
 
-## Round 1 fixes:
-- Fixed failing test gate (EMA structure direction bug)
-- Populated quote[r2]/[s2] in orchestrator pivot block for compute_pivot_risk_score's +2 continuation branch
-- Added unit tests for r2/s2 branch coverage
-- Deferred MTF (Task 3) and backtest.py upgrade (Tasks 4-5) to separate PRs
+## Why
+Claude Opus 4.8 requested changes on PR #2 (round 1).
 
-## Round 2 fixes:
-- Rebalanced weights to sum to 100 (trend 25→22, momentum 20→18) to absorb +5 pivot_risk component
+## Required fixes
+[
+  'Fix the independent unittest gate — it currently FAILS on this branch; restore/repair whatever test is broken rather than weakening it, and confirm the full suite passes before re-review.',
+  "Populate quote['r2']/['s2'] in the orchestrator pivot block (plan Task 1) so compute_pivot_risk_score's 'below R2' +2 branch can actually fire; otherwise it is dead code and pivot_risk caps at 3/5 in practice.",
+  'Add a scoring test that exercises the r2/s2 branch of compute_pivot_risk_score to prove the +2 continuation path works.',
+  'Reconcile the PR/plan with the diff: only pivot_risk scoring is delivered. Remove the MTF (Task 3) and backtest.py upgrade (Tasks 4-5) claims and their unchecked plan tasks from this PR, or deliver and smoke-test them separately.',
+  'Split into one concern per PR — merge pivot_risk scoring on its own; MTF wiring and backtest integration each become separate PRs (and each would need yfinance declared in requirements.txt or, per owner guidance, sourced from existing ccxt ohlcv_data instead of a second undeclared provider).'
+]
 
-## Round 3 fixes:
-- Dropped dead s2 parameter from compute_pivot_risk_score() — accepted but never used in function body
-- Fixed flaky cache TTL test (time.sleep → deterministic os.utime)
-- Updated backtest.py dual-mode scoring test
-
-## Round 4: Merge conflict resolution:
-- Rebased onto latest main, resolved 6 conflicts across orchestrator.py, backtest.py, scoring_engine.py
-- Fixed Unicode characters in scoring_engine.py docstrings for Python 3.11 compatibility
-- All 74 tests pass. Pushed to remote (commit 099421d). Commented on PR #2.
-
-## Outstanding design note — RESOLVED:
-- ~~pivot_risk overlaps pivot_position~~ → **Resolved in PR #3**
-  - Both reward the same positional signal (+3 for between S1/R1)
-  - Differentiated by strictness: pivot_position = loose check, pivot_risk = middle-third margin + R2 confirmation
-  - See https://github.com/seleron/agentic-trading-desk/pull/3
+## Acceptance
+Unit tests pass; fixes addressed; re-review approves.
+## Constraints
+UPDATE the existing branch `feature/pivot-mtf-backtest-integration` (do NOT open a new PR). Do not edit test_data_quality.py.

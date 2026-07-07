@@ -176,7 +176,7 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
     with open(os.path.join(output_dir, "scores.json"), "w") as f:
         json.dump(scores_output, f, indent=2)
 
-    # Step 4b: Multi-timeframe verification — weekly trend confirmation for daily signals
+    # Step 3: Multi-timeframe verification (merged: HEAD step numbering + PR2 richer analysis)
     print("[3/9] Running multi-timeframe analysis...")
     from multi_timeframe import compute_single_tf_score
 

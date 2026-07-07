@@ -24,14 +24,23 @@ from unittest.mock import MagicMock, patch
 # ---------------------------------------------------------------------------
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+# Import data_fetcher module for attribute-level patching (tests reference
+# _cache_dir directly via the module import above; patch.object on the module
+# ensures save_cached_data → _cache_path() and test code both see it.)
+import data_fetcher as _df_module
+
 from data_fetcher import (
-    _cache_dir,
     _cache_key,
     _retry_with_backoff,
     detect_gaps,
     get_cached_data,
     save_cached_data,
 )
+
+
+# Re-import _cache_dir so the test can patch it via module namespace.
+_cache_dir = getattr(_df_module, '_cache_dir')
 from indicators import (
     bollinger,
     compute,
@@ -123,10 +132,20 @@ class TestCache(unittest.TestCase):
         self.tmpdir = tempfile.mkdtemp()
 
     def _patch_cache_dir(self):
-        """Patch _cache_dir to return our temp dir for this test method."""
-        patcher = patch("data_fetcher._cache_dir", return_value=Path(self.tmpdir))
-        self.addCleanup(patcher.stop)
-        patcher.start()
+        """Patch _cache_dir to return our temp dir for this test method.
+
+        We patch on the module object (via ``_df_module``) and also update the
+        local ``_cache_dir`` name in this file so that direct calls like
+        ``Path(_cache_dir())`` see the patched value.  This ensures both
+        ``save_cached_data`` → ``_cache_path()`` and test code resolve to the
+        same temp directory.
+        """
+        self._original_cache_dir = _df_module._cache_dir
+        def mock():
+            return Path(self.tmpdir)
+        _df_module._cache_dir = mock
+        # Also update the local reference so calls like ``Path(_cache_dir())`` work
+        globals()['_cache_dir'] = mock
 
     def test_cache_key_deterministic(self):
         k1 = _cache_key("binance", "BTC/USDT", "1d")
