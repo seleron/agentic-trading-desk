@@ -35,7 +35,14 @@ RESOLVED — 35/35 unit tests pass; all imports clean. No code changes needed (f
 
 **Validation round 2026-07-05 (cron):** Re-verified — 35/35 tests pass in 3.6s, all module imports clean. No drift from branch state.
 
-**Validation round 2026-07-05 (cron):** Third re-check — 35/35 tests pass in 3.7s, all five review items confirmed wired in-code (ema200 credit @ trend=25 with full reasoning chain), score_quote None vol handling verified, orchestrator date_type import present, all data_fetcher/indicators exports match test expectations. No drift from branch state.
+**Validation round 2026-07-06 (cron):** Third re-check — 35/35 tests pass in 3.7s, all five review items confirmed wired in-code (ema200 credit @ trend=25 with full reasoning chain), score_quote None vol handling verified, orchestrator date_type import present, all data_fetcher/indicators exports match test expectations. No drift from branch state.
+
+**Validation round 2026-07-07 (cron):** Branch updated locally — fast-forwarded to `origin/autonomous/scaffolding` (3 new commits: merge main, PR#1 review items, review-round-2 fixes). Fresh test run: 51/51 pass in 3.8s (35 data-quality + 16 pipeline). All five round-2 review items verified in-code:
+1. `compute_ema_structure_score` checks `ema20>ema50>ema200` (bullish) — line 156
+2. `orchestrator` passes `pillar_weights=bt_weights` to `run_backtest` — lines 307-314
+3. `trade_plan` short-entry wired from `decision['action']` via SHORT/SELL keywords — line 150
+4. `learning_module.analyze_trades` handles fresh DB (no trades table) — line 38
+5. `scripts/test_pipeline.py` added with 16 coverage tests for scoring, selection, trade_plan direction, backtest signature, EOD, and learning modules.
 
 **Validation round 2026-07-06 (cron):** Re-verified — 35/35 tests pass in 3.64s, all five review items confirmed intact (ema200 credit @ trend=25 with full reasoning chain, score_quote None vol handling verified via lines 301-313, orchestrator date_type import at line 21), data_fetcher exports (_retry_with_backoff, detect_gaps, _cache_dir, _cache_key, get_cached_data, save_cached_data) all importable, indicators.forward_fill signature `(series, max_gap=10)` confirmed. No drift from branch state.
 
