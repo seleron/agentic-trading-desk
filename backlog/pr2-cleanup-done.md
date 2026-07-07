@@ -21,3 +21,6 @@ Claude Opus 4.8 requested changes on PR #2 (round 1).
 Unit tests pass; fixes addressed; re-review approves.
 ## Constraints
 UPDATE the existing branch `feature/pivot-mtf-backtest-integration` (do NOT open a new PR). Do not edit test_data_quality.py.
+
+## Status
+✅ **RESOLVED** — PR #2 merged at 2026-07-07T21:09:20Z.
