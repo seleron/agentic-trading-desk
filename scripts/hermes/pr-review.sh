@@ -69,11 +69,10 @@ WT="$(cd "$(dirname "$ROOT")" && pwd)/agentic-trading-review-$PR"
 git worktree remove --force "$WT" >/dev/null 2>&1 || true; [ -d "$WT" ] && rm -rf "$WT"
 git worktree add --detach "$WT" "origin/$HEAD_BRANCH" >/dev/null 2>&1
 
-# Restore base's test file so a PR can't weaken tests to pass
+# Restore base's test files so a PR can't weaken tests to pass
 if git -C "$WT" checkout "origin/$BASE" -- scripts/test_data_quality.py 2>/dev/null; then
-    log "Running independent gate (unittest)…"
-    GATE_LOG="$(cd "$WT" && timeout 300 python3 -m unittest scripts.test_data_quality 2>&1)" || true
-    if echo "$GATE_LOG" | grep -q 'OK'; then
+    log "Running independent gate (all unittests)…"\n    GATE_LOG="$(cd "$WT" && timeout 300 python3 -m unittest scripts.test_pipeline scripts.test_data_quality scripts.test_scoring_engine 2>&1)" || true
+    if echo "$GATE_LOG" | grep -qE '^Ran [0-9]+ test.*OK$'; then
         GATE_RESULT="PASS"
     else
         GATE_RESULT="FAIL"
@@ -161,7 +160,7 @@ if [ "$DECISION" = "REQUEST_CHANGES" ] && [ -n "$FIXES" ]; then
         else
             REMAINING="${REMAINING}${fix_item}"$'\n'
         fi
-    done < <(python3 -c "import json,sys; fixes=json.loads(sys.argv[1]); [print(f) for f in fixes]" "$FIXES" 2>/dev/null || echo "$FIXES" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{const j=JSON.parse(d);j.forEach(f=>console.log(f))}")
+    done < <(python3 -c "import json,sys; fixes=json.loads(sys.stdin.read()); [print(f) for f in fixes]" <<< "$FIXES" 2>/dev/null || echo "$FIXES" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{const j=JSON.parse(d);j.forEach(f=>console.log(f))}")
     
     FIXES_FILTERED="$(echo "$REMAINING" | sed '/^$/d' | paste -sd',' 2>/dev/null || true)"
     
