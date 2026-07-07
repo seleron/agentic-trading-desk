@@ -1,0 +1,27 @@
+{
+  "timestamp": "2026-07-07T23:00:00Z",
+  "branch": "feature/intraday-scanner",
+  "tests": {
+    "total": 109,
+    "passed": 109,
+    "failed": 0,
+    "duration_seconds": 1.285
+  },
+  "test_suites": [
+    "scripts.test_pipeline",
+    "scripts.test_data_quality",
+    "scripts.test_scoring_engine"
+  ],
+  "changes": {
+    "description": "Added intraday scanner loop mode with decision-change detection (backlog #003)",
+    "new_tests_added": 13,
+    "tests_fixed": 1,
+    "modules_modified": ["orchestrator.py", "config.yaml"],
+    "test_files_modified": ["test_pipeline.py", "test_notification_router.py"]
+  },
+  "baseline": {
+    "previous_total": 96,
+    "new_total": 109,
+    "delta": "+13"
+  }
+}
