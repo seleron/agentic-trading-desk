@@ -2,10 +2,18 @@
 """
 scoring_engine.py
 =================
-7-component scoring engine for BIST AI Trader v1.0.
+8-component scoring engine for BIST AI Trader v1.0 (pivot_risk +5 additive).
 
-Scoring formula (from spec):
-  Score = Trend(25) + Momentum(20) + Volume(15) + EMA Structure(15) + Pivot Position(10) + Volatility(10) + Technical Summary(5)
+Scoring formula:
+  Score = Trend(22) + Momentum(18) + Volume(15) + EMA Structure(15) + Pivot Position(10) + Volatility(10) + Technical Summary(5) + pivot_risk(+5, max 5)
+  Total raw max: 105 → clamped to [0, 100] by final_score = min(100, raw_total)
+
+Component differentiation (resolves overlap between pivot_position and pivot_risk):
+  - pivot_position   : "Where am I relative to support/resistance?" — bounce/continuation signals (+10 max)
+  - pivot_risk       : "How much room do I have above/below?" — safe-zone + continuation confirmation (+5 max)
+    Both reward price between S1/R1, but:
+      * pivot_position = directional (bounce from support OR continuation toward resistance)
+      * pivot_risk     = spatial safety (distance from edges + room to next level)
 
 Penalty system:
   RSI > 80         → -10
@@ -29,12 +37,13 @@ from typing import Optional
 # ── Scoring constants (configurable) ────────────────────────────────────────
 
 COMPONENT_WEIGHTS = {
-    "trend": 25,
-    "momentum": 20,
+    "trend": 22,
+    "momentum": 18,
     "volume": 15,
     "ema_structure": 15,
     "pivot_position": 10,
     "volatility": 10,
+    "pivot_risk": 5,
     "technical_summary": 5,
 }
 
@@ -194,6 +203,60 @@ def compute_pivot_score(
     return min(score, 10), rationale
 
 
+def compute_pivot_risk_score(
+    close: float, pivot: Optional[float], r1: Optional[float], s1: Optional[float],
+    r2: Optional[float] = None
+) -> tuple[int, list[str]]:
+    """Pivot risk scoring — max 5 points.
+
+    Complementary to compute_pivot_score(). Where pivot_position asks 'where am I?',
+    this asks 'how safe is my position?' with two spatial checks:
+
+      Safely between S1 and R1 (not near edges, with configurable margin) → +3
+        * Uses a 3% distance buffer from both S1 and R1 to avoid edge cases.
+        * This is NOT the same as compute_pivot_score's simple 'between S1/R1' check;
+          it requires being in the middle third of the range, not just anywhere inside.
+
+      Close above pivot with room to R2 (bullish continuation zone) → +2
+        * Only fires when r2 is available — confirms there's still upside room.
+        * Ensures we're between pivot and R2 (with margin), i.e., not already at resistance.
+
+    Design rationale: both functions reward 'between S1/R1' but with different strictness.
+      - compute_pivot_score  : any position inside [S1, R1] gets +3 (loose check)
+      - compute_pivot_risk   : needs to be in the middle third of [S1, R1] (+3) AND
+                                above pivot below R2 (+2) = max 5 points total.
+    This prevents double-counting: a stock at S1 gets +3 from position but 0 from risk;
+    one near the center gets both signals independently.
+
+    Args:
+        close: Current price.
+        pivot: Central pivot level (optional — required for edge checks).
+        r1: First resistance level (required).
+        s1: First support level (required).
+        r2: Second resistance level (optional — enables continuation check).
+
+    Returns:
+        Tuple of (score, rationale_list) where score is 0-5.
+    """
+    score = 0
+    rationale: list[str] = []
+
+    if close > 0 and pivot is not None and s1 is not None and r1 is not None:
+        margin = 0.03 * close  # 3% margin from S1/R1 edges
+
+        # Safely between S1 and R1 (not near edges) — requires being in middle third
+        if close > s1 + margin and close < r1 - margin:
+            score += 3
+            rationale.append("Safely between S1 and R1 - low pivot risk")
+
+        # Above pivot with room to R2 (bullish continuation zone)
+        if close > pivot and r2 is not None and close < r2 - margin:
+            score += 2
+            rationale.append(f"Above pivot, below R2({r2:.2f}) - bullish continuation zone")
+
+    return min(score, 5), rationale
+
+
 def compute_volatility_score(high: float, low: float, close: float) -> tuple[int, list[str]]:
     """Volatility scoring — max 10 points.
 
@@ -313,11 +376,18 @@ def score_quote(quote: dict) -> dict:
         volume_reasons = ["volume_avg_20 missing — component skipped"]
     ema_struct_score, ema_reasons = compute_ema_structure_score(close, ema20, ema50, ema200)
     pivot_score_val, pivot_reasons = compute_pivot_score(close, pivot, r1, s1)
+
+    # Pivot risk — complementary to pivot_position; requires R2 for continuation check.
+    r2 = quote.get("r2")
+    pivot_risk_score_val, pivot_risk_reasons = compute_pivot_risk_score(
+        close, pivot, r1, s1, r2
+    )
+
     volatility_score_val, vol_reasons = compute_volatility_score(high, low, close)
     tech_summary_score, tech_reasons = compute_technical_summary_score(close, open_price, high, low)
 
     raw_total = (trend_score + momentum_score + volume_score_val + ema_struct_score +
-                 pivot_score_val + volatility_score_val + tech_summary_score)
+                 pivot_score_val + pivot_risk_score_val + volatility_score_val + tech_summary_score)
 
     penalties, penalty_reasons = apply_penalties(
         rsi, volume, volume_avg_20 if volume_avg_20 is not None else 0.0, ema20, ema50
@@ -325,7 +395,7 @@ def score_quote(quote: dict) -> dict:
     final_score = max(0, min(100, raw_total + penalties))
 
     all_reasons = (trend_reasons + momentum_reasons + volume_reasons + ema_reasons +
-                   pivot_reasons + vol_reasons + tech_reasons + penalty_reasons)
+                   pivot_reasons + pivot_risk_reasons + vol_reasons + tech_reasons + penalty_reasons)
 
     return {
         "symbol": quote.get("symbol", "UNKNOWN"),
@@ -337,6 +407,7 @@ def score_quote(quote: dict) -> dict:
             "volume": volume_score_val,
             "ema_structure": ema_struct_score,
             "pivot_position": pivot_score_val,
+            "pivot_risk": pivot_risk_score_val,
             "volatility": volatility_score_val,
             "technical_summary": tech_summary_score,
         },
@@ -391,7 +462,7 @@ def select_top_picks(scores: list[dict], threshold: int = 80, top_n: int = 2) ->
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="7-component scoring engine for BIST AI Trader v1.0.")
+    ap = argparse.ArgumentParser(description="8-component scoring engine for BIST AI Trader v1.0.")
     ap.add_argument("--input", "-i", required=True, help="Input JSON file with stock quotes")
     ap.add_argument("--output", "-o", default=None, help="Output JSON file for scores")
     ap.add_argument("--threshold", type=int, default=80, help="Score threshold for picks (default: 80)")
