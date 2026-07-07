@@ -144,7 +144,7 @@ log "Asking Claude Opus 4.8 to review…"
 RAW="$(claude -p "$PROMPT" --model claude-opus-4-8 2>/dev/null)"
 J="$(echo "$RAW" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{process.stdout.write(JSON.stringify(JSON.parse(d)))}catch{const a=d.indexOf("{"),b=d.lastIndexOf("}");try{process.stdout.write(JSON.stringify(JSON.parse(d.slice(a,b+1))))}catch{process.stdout.write("")}}})')"
 [ -z "$J" ] && { log "could not parse Claude review JSON:"; log "$RAW"; exit 1; }
-get(){ echo "$J" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{const j=JSON.parse(d);const v=j['$1'];console.log(v)})"; }; DECISION="$(get decision)"; RISK="$(get risk)"; SUMMARY="$(get summary)"; FIXES="$(get fixes)"; MERGE_SAFE="$(get merge_safe)"; QUESTIONS="$(get questions)"
+get(){ echo "$J" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{const j=JSON.parse(d);const v=j['$1'];console.log(JSON.stringify(v))})"; }; DECISION="$(get decision)"; RISK="$(get risk)"; SUMMARY="$(get summary)"; FIXES="$(get fixes)"; MERGE_SAFE="$(get merge_safe)"; QUESTIONS="$(get questions)"
 
 # --- fix-awareness: filter out already-addressed items -----------------------
 # Claude keeps requesting the same fixes because he only sees the static diff.
@@ -161,7 +161,7 @@ if [ "$DECISION" = "REQUEST_CHANGES" ] && [ -n "$FIXES" ]; then
         else
             REMAINING="${REMAINING}${fix_item}"$'\n'
         fi
-    done < <(echo "$FIXES" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{const j=JSON.parse(d);j.forEach(f=>console.log(f))}")
+    done < <(python3 -c 'import json,sys; fixes=json.loads(sys.stdin.read()); [print(f) for f in fixes]' <<< "$FIXES" 2>/dev/null || echo "$FIXES" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{const j=JSON.parse(d);j.forEach(f=>console.log(JSON.stringify(f)))}")
     
     FIXES_FILTERED="$(echo "$REMAINING" | sed '/^$/d' | paste -sd',' 2>/dev/null || true)"
     
