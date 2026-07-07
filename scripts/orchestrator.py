@@ -163,12 +163,11 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
             low_20 = min(o["low"] for o in recent)
             pivot = (high_20 + low_20 + latest["close"]) / 3
             range_val = high_20 - low_20
-            quote["pivot"] = pivot
-            quote["r1"] = pivot + range_val * 0.382 if range_val > 0 else None
-            quote["s1"] = pivot - range_val * 0.382 if range_val > 0 else None
-            # R2/S2 using Fibonacci extension (0.618)
-            quote["r2"] = pivot + range_val * 0.618 if range_val > 0 else None
-            quote["s2"] = pivot - range_val * 0.618 if range_val > 0 else None
+            quote["pivot"] = round(pivot, 4) if range_val > 0 else None
+            quote["r1"] = round(pivot + range_val * 0.382, 4) if range_val > 0 else None
+            quote["s1"] = round(pivot - range_val * 0.382, 4) if range_val > 0 else None
+            quote["r2"] = round(pivot + range_val * 0.618, 4) if range_val > 0 else None
+            quote["s2"] = round(pivot - range_val * 0.618, 4) if range_val > 0 else None
 
         quotes.append(quote)
 
@@ -176,7 +175,7 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
     with open(os.path.join(output_dir, "scores.json"), "w") as f:
         json.dump(scores_output, f, indent=2)
 
-    # Step 3: Multi-timeframe verification (merged: HEAD step numbering + PR2 richer analysis)
+   # Step 3: Multi-timeframe verification — weekly trend confirmation for daily signals
     print("[3/9] Running multi-timeframe analysis...")
     from multi_timeframe import compute_single_tf_score
 
@@ -202,7 +201,7 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
             "weekly_bullish": weekly_score.get("score", 0) >= 5,
         }
 
-    # Save MTF results for pipeline output
+    # Step 4: Selection (top picks + NO TRADE DAY)
     print("[4/9] Selecting top picks...")
     from scoring_engine import select_top_picks
     threshold = config.get("scoring", {}).get("threshold", 80)
@@ -259,25 +258,17 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
 
     # Step 7b: Backtesting for top picks — run historical walk-forward on selected symbols
     print("[9/9] Running backtests on historical data...")
-    from backtest import run_backtest as bt_run, BacktestResult
+    from backtest import run_backtest as bt_run
 
     backtest_results = []
 
     for pick in selection.get("top_picks", []):
         symbol = pick["symbol"]
         try:
-            # Try ccxt first (same source as live pipeline), fall back to yfinance
-            hist_raw = None
-            try:
-                hist_raw = fetch_bist_data(symbol, timeframe="1d", limit=450)
-            except Exception:
-                pass  # ccxt fallback below
-
+            hist_raw = fetch_bist_data(symbol, timeframe="1d", limit=450)
             if not hist_raw or len(hist_raw) < 200:
-                # Fallback to yfinance for BIST symbols (ccxt lacks many Turkish stocks)
-                import yfinance as yf  # noqa: F811 — local to this block only
-
-                hist_yf = yf.Ticker(symbol).history(period="5y")
+                import yfinance as _yf  # noqa: F811 — local to this block only
+                hist_yf = _yf.Ticker(symbol).history(period="5y")
                 if len(hist_yf) < 200:
                     print(f"  [WARN] Backtest: insufficient history for {symbol}", file=sys.stderr)
                     continue
@@ -293,7 +284,7 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
                     })
             else:
                 bars = []
-                for bar in hist_raw[:350]:  # cap at ~350 bars to keep runtime reasonable
+                for bar in hist_raw[:350]:
                     bars.append({
                         "date": bar.get("date", ""),
                         "open": float(bar["open"]),
@@ -303,15 +294,9 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
                         "volume": int(bar.get("volume", 0)),
                     })
 
-            # Backtest pillar weights come from config (fall back to sensible
-            # defaults matching run_backtest's expected keys).
-            bt_weights = config.get("backtest", {}).get(
-                "pillar_weights",
-                {"trend": 0.4, "momentum": 0.3, "macro_sentiment": 0.3},
-            )
             result = bt_run(
                 bars=bars,
-                pillar_weights=bt_weights,
+                pillar_weights={"trend": 0.4, "momentum": 0.35, "macro_sentiment": 0.25},
                 capital=10000.0,
             )
 
@@ -333,9 +318,9 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
         "selection": selection,
         "trade_plans": trade_plans,
         "notifications_count": len(notifications),
-        "eod_report": eod_report if not eod_report.get("no_trades") else None,
-        "mtf_verification": mtf_consensus,
+       "mtf_verification": mtf_consensus,
         "backtest_results": backtest_results,
+        "eod_report": eod_report if not eod_report.get("no_trades") else None,
         "learning_ready": learning_result.get("ready", False),
     }
 
