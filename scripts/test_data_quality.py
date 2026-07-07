@@ -164,7 +164,9 @@ class TestCache(unittest.TestCase):
         save_cached_data("binance", "BTC/USDT", "1d", sample_data)
 
         # Cache exists but is too old (TTL=2 seconds, file age > 2s)
-        time.sleep(2.5)
+        cache_file = Path(_cache_dir()) / f"{_cache_key('binance', 'BTC/USDT', '1d')}.json"
+        old_time = time.time() - 5
+        os.utime(str(cache_file), (old_time, old_time))
         result = get_cached_data("binance", "BTC/USDT", "1d", ttl_seconds=2)
         self.assertIsNone(result)
 
