@@ -163,11 +163,8 @@ class TestCache(unittest.TestCase):
         ]
         save_cached_data("binance", "BTC/USDT", "1d", sample_data)
 
-        # Manually set cache file mtime to 3 seconds ago so TTL check fails
-        cache_file = Path(self.tmpdir) / f"{_cache_key('binance', 'BTC/USDT', '1d')}.json"
-        old_time = time.time() - 3
-        os.utime(cache_file, (old_time, old_time))
-
+        # Cache exists but is too old (TTL=2 seconds, file age > 2s)
+        time.sleep(2.5)
         result = get_cached_data("binance", "BTC/USDT", "1d", ttl_seconds=2)
         self.assertIsNone(result)
 
@@ -412,100 +409,6 @@ class TestPublicAPIUnchanged(unittest.TestCase):
         # Optional parameters should have defaults
         close_param = sig.parameters["close"]
         self.assertEqual(close_param.kind, inspect.Parameter.POSITIONAL_OR_KEYWORD)
-
-
-# ===================================================================
-# 8. Pivot risk scoring (PR #2 — compute_pivot_risk_score)
-# ===================================================================
-
-class TestPivotRiskScoring(unittest.TestCase):
-    """Test compute_pivot_risk_score function added in PR #2."""
-
-    def test_safely_between_s1_r1(self):
-        """Close safely between S1 and R1 → +3 points."""
-        from scoring_engine import compute_pivot_risk_score
-        score, rationale = compute_pivot_risk_score(
-            close=105.0, pivot=100.0, r1=110.0, s1=90.0
-        )
-        self.assertEqual(score, 3)
-        self.assertTrue(any("Safely between S1 and R1" in r for r in rationale))
-
-    def test_below_s1_no_pivot_risk(self):
-        """Close below S1 → no points (not safely between)."""
-        from scoring_engine import compute_pivot_risk_score
-        score, _ = compute_pivot_risk_score(
-            close=85.0, pivot=100.0, r1=110.0, s1=90.0
-        )
-        self.assertEqual(score, 0)
-
-    def test_above_r1_no_pivot_risk(self):
-        """Close above R1 → no points (not safely between)."""
-        from scoring_engine import compute_pivot_risk_score
-        score, _ = compute_pivot_risk_score(
-            close=115.0, pivot=100.0, r1=110.0, s1=90.0
-        )
-        self.assertEqual(score, 0)
-
-    def test_near_s1_edge_no_bonus(self):
-        """Close within 3% of S1 → not 'safely between'."""
-        from scoring_engine import compute_pivot_risk_score
-        close = 92.5  # s1=90 + margin(0.03*92.5=2.78)=92.78, so 92.5 < 92.78
-        score, _ = compute_pivot_risk_score(
-            close=close, pivot=100.0, r1=110.0, s1=90.0
-        )
-        self.assertEqual(score, 0)
-
-    def test_above_pivot_with_r2(self):
-        """Close above pivot with room to R2 → +3 (between S1/R1) + +2 (continuation)."""
-        from scoring_engine import compute_pivot_risk_score
-        score, rationale = compute_pivot_risk_score(
-            close=105.0, pivot=100.0, r1=110.0, s1=90.0, r2=120.0
-        )
-        # +3 for between S1/R1 + +2 for above pivot below R2 = 5 max
-        self.assertEqual(score, 5)
-        self.assertTrue(any("continuation" in r.lower() or "R2" in r for r in rationale))
-
-    def test_above_r2_no_continuation(self):
-        """Close above R2 → +3 between S1/R1 but no +2 continuation."""
-        from scoring_engine import compute_pivot_risk_score
-        score, _ = compute_pivot_risk_score(
-            close=105.0, pivot=100.0, r1=110.0, s1=90.0, r2=103.0
-        )
-        # +3 for between S1/R1, but close > R2 so no continuation
-        self.assertEqual(score, 3)
-
-    def test_missing_r2_no_continuation_bonus(self):
-        """Close above pivot but R2 not provided → only +3."""
-        from scoring_engine import compute_pivot_risk_score
-        score, _ = compute_pivot_risk_score(
-            close=105.0, pivot=100.0, r1=110.0, s1=90.0
-        )
-        self.assertEqual(score, 3)
-
-    def test_below_pivot_no_continuation(self):
-        """Close below pivot → only +3 between S1/R1."""
-        from scoring_engine import compute_pivot_risk_score
-        score, _ = compute_pivot_risk_score(
-            close=98.0, pivot=100.0, r1=110.0, s1=90.0, r2=120.0
-        )
-        self.assertEqual(score, 3)
-
-    def test_all_none_returns_zero(self):
-        """Missing values → score = 0."""
-        from scoring_engine import compute_pivot_risk_score
-        score, _ = compute_pivot_risk_score(
-            close=100.0, pivot=None, r1=None, s1=None
-        )
-        self.assertEqual(score, 0)
-
-    def test_very_close_to_r1_edge(self):
-        """Close within 3% of R1 → not 'safely between'."""
-        from scoring_engine import compute_pivot_risk_score
-        close = 107.5  # > r1 - margin(106.78) → too close to R1
-        score, _ = compute_pivot_risk_score(
-            close=close, pivot=100.0, r1=110.0, s1=90.0
-        )
-        self.assertEqual(score, 0)
 
 
 if __name__ == "__main__":

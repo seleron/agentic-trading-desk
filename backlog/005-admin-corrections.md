@@ -3,6 +3,8 @@ rank: 3
 title: Admin correction system for manual overrides
 area: feedback-loop
 depends_on:
+resolved: true
+resolved_at: 2026-07-08T01:54Z
 ---
 
 ## Why
@@ -11,11 +13,11 @@ Like Adverts-Project's admin corrections, the trading engine should accept manua
 
 ## Acceptance Criteria
 
-- [ ] New config section `[admin_corrections]` in config.yaml with per-ticker overrides
-- [ ] Override types: `force_buy`, `force_sell`, `ignore`, `custom_weight_modifier`
-- [ ] Scoring engine checks admin corrections before returning final decision
-- [ ] Corrections logged to SQLite for learning module analysis
-- [ ] CLI command to add/remove corrections without editing YAML
+- [x] New config section `[admin_corrections]` in config.yaml with per-ticker overrides
+- [x] Override types: `force_buy`, `force_sell`, `ignore`, `custom_weight_modifier`
+- [x] Scoring engine checks admin corrections before returning final decision
+- [x] Corrections logged to SQLite for learning module analysis
+- [x] CLI command to add/remove corrections without editing YAML
 
 ## Constraints
 
