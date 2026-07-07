@@ -8,11 +8,11 @@ Scoring formula (from spec):
   Score = Trend(25) + Momentum(20) + Volume(15) + EMA Structure(15) + Pivot Position(10) + Volatility(10) + Technical Summary(5)
 
 Penalty system:
-  RSI > 80         → -10
-  RSI < 35         → -10
-  MACD bearish     → -15
-  Volume low       → -10
-  EMA20 < EMA50    → -20
+  RSI > 80         -> -10
+  RSI < 35         -> -10
+  MACD bearish     -> -15
+  Volume low       -> -10
+  EMA20 < EMA50    -> -20
 
 Usage:
     python3 scripts/scoring_engine.py --input quotes.json --output scores.json
@@ -26,7 +26,7 @@ import sys
 from typing import Optional
 
 
-# ── Scoring constants (configurable) ────────────────────────────────────────
+# -- Scoring constants (configurable) ----------------------------------------
 
 COMPONENT_WEIGHTS = {
     "trend": 25,
@@ -40,10 +40,10 @@ COMPONENT_WEIGHTS = {
 }
 
 PENALTIES = {
-    "rsi_overbought_max": 80,   # RSI > this → -10
-    "rsi_oversold_max": 35,     # RSI < this → -10
-    "volume_low_mult": 0.6,     # volume below 0.6× 20-day avg → -10
-    "ema_penalize_gap": True,   # EMA20 < EMA50 → -20 (always)
+    "rsi_overbought_max": 80,   # RSI > this -> -10
+    "rsi_oversold_max": 35,     # RSI < this -> -10
+    "volume_low_mult": 0.6,     # volume below 0.6× 20-day avg -> -10
+    "ema_penalize_gap": True,   # EMA20 < EMA50 -> -20 (always)
 }
 
 # Momentum RSI zones (from spec)
@@ -57,11 +57,11 @@ def compute_trend_score(
     ema50: Optional[float],
     ema200: Optional[float] = None,
 ) -> tuple[int, list[str]]:
-    """Trend scoring — max 25 points.
+    """Trend scoring - max 25 points.
 
-    EMA20 > EMA50 → +15 (bullish alignment)
-    EMA50 > EMA200 → +10 (long trend confirmation) — ema200 optional
-    Close above both EMAs → +bonus up to +10
+    EMA20 > EMA50 -> +15 (bullish alignment)
+    EMA50 > EMA200 -> +10 (long trend confirmation) - ema200 optional
+    Close above both EMAs -> +bonus up to +10
     """
     score = 0
     rationale: list[str] = []
@@ -73,7 +73,7 @@ def compute_trend_score(
         else:
             score += 5  # partial credit for bearish
 
-    # Long-term trend confirmation: EMA50 > EMA200 → +10
+    # Long-term trend confirmation: EMA50 > EMA200 -> +10
     if ema50 is not None and ema200 is not None:
         if ema20 is not None and ema20 >= ema50 > ema200:
             score += 10
@@ -82,7 +82,7 @@ def compute_trend_score(
             score += 10
             rationale.append("EMA50 > EMA200 long-term bullish")
 
-    # Close above both EMAs → bonus (up to +10, but capped by total)
+    # Close above both EMAs -> bonus (up to +10, but capped by total)
     if close > 0 and ema20 is not None and ema50 is not None:
         if close > ema20 and close > ema50:
             score += 10
@@ -94,14 +94,14 @@ def compute_trend_score(
 def compute_momentum_score(
     rsi: Optional[float], macd: float, macd_signal: float, close: float, ema20: Optional[float]
 ) -> tuple[int, list[str]]:
-    """Momentum scoring — max 20 points.
+    """Momentum scoring - max 20 points.
 
     RSI zone-based:
-      50–65 → healthy trend (+10)
-      65–75 → strong momentum (+15)
-      >80   → overbought penalty applied later
-    MACD bullish cross (macd > signal) → +10
-    Close above EMA20 → +bonus
+      50-65 -> healthy trend (+10)
+      65-75 -> strong momentum (+15)
+      >80   -> overbought penalty applied later
+    MACD bullish cross (macd > signal) -> +10
+    Close above EMA20 -> +bonus
     """
     score = 0
     rationale: list[str] = []
@@ -123,10 +123,10 @@ def compute_momentum_score(
 
 
 def compute_volume_score(volume: float, volume_avg_20: float) -> tuple[int, list[str]]:
-    """Volume scoring — max 15 points.
+    """Volume scoring - max 15 points.
 
-    Volume > 20-day avg → +10 (volume spike confirmation)
-    Volume > 1.5× avg → +5 bonus (strong conviction)
+    Volume > 20-day avg -> +10 (volume spike confirmation)
+    Volume > 1.5× avg -> +5 bonus (strong conviction)
     """
     score = 0
     rationale: list[str] = []
@@ -144,11 +144,11 @@ def compute_volume_score(volume: float, volume_avg_20: float) -> tuple[int, list
 def compute_ema_structure_score(
     close: float, ema20: Optional[float], ema50: Optional[float], ema200: Optional[float]
 ) -> tuple[int, list[str]]:
-    """EMA structure scoring — max 15 points.
+    """EMA structure scoring - max 15 points.
 
-    Clean bullish alignment (close > EMA20 > EMA50 > EMA200) → +10
+    Clean bullish alignment (20 > 50 > 200) -> +15
     Partial alignments get proportional credit.
-    Close near EMA20 (< 2% deviation) → +bonus for pullback entry opportunity.
+    Close near EMA20 (< 2% deviation) -> +bonus for pullback entry opportunity.
     """
     score = 0
     rationale: list[str] = []
@@ -162,7 +162,7 @@ def compute_ema_structure_score(
         dev = abs(close - ema20) / close * 100
         if dev < 2.0:
             score += 5
-            rationale.append(f"Near EMA20 ({dev:.1f}% deviation) — pullback entry")
+            rationale.append(f"Near EMA20 ({dev:.1f}% deviation) - pullback entry")
 
     return min(score, 15), rationale
 
@@ -170,11 +170,11 @@ def compute_ema_structure_score(
 def compute_pivot_score(
     close: float, pivot: Optional[float], r1: Optional[float], s1: Optional[float]
 ) -> tuple[int, list[str]]:
-    """Pivot position scoring — max 10 points.
+    """Pivot position scoring - max 10 points.
 
-    Close between S1 and R1 → neutral (+3)
-    Close near support (S1 ± 2%) → +5 bounce opportunity
-    Close above pivot but below R1 → bullish continuation (+7)
+    Close between S1 and R1 -> neutral (+3)
+    Close near support (S1 +/- 2%) -> +5 bounce opportunity
+    Close above pivot but below R1 -> bullish continuation (+7)
     """
     score = 0
     rationale: list[str] = []
@@ -185,12 +185,12 @@ def compute_pivot_score(
         if s1 is not None and r1 is not None:
             if s1 <= close <= r1:
                 score += 3
-                rationale.append(f"Between S1({s1}) and R1({r1}) — neutral zone")
+                rationale.append(f"Between S1({s1}) and R1({r1}) - neutral zone")
             elif close < pivot:
                 dist_from_s1 = abs(close - s1) / s1 * 100 if s1 > 0 else 999
                 if dist_from_s1 < 2.0:
                     score += 7
-                    rationale.append(f"Near support S1({s1:.2f}) — bounce opportunity")
+                    rationale.append(f"Near support S1({s1:.2f}) - bounce opportunity")
 
     return min(score, 10), rationale
 
@@ -199,10 +199,10 @@ def compute_pivot_risk_score(
     close: float, pivot: Optional[float], r1: Optional[float], s1: Optional[float],
     r2: Optional[float] = None, s2: Optional[float] = None
 ) -> tuple[int, list[str]]:
-    """Pivot risk scoring — max 5 points.
+    """Pivot risk scoring - max 5 points.
 
-    Close safely between S1 and R1 (not near edges) → +3
-    Close above pivot with room to R2 → +2 continuation signal
+    Close safely between S1 and R1 (not near edges) -> +3
+    Close above pivot with room to R2 -> +2 continuation signal
     """
     score = 0
     rationale: list[str] = []
@@ -213,23 +213,23 @@ def compute_pivot_risk_score(
         # Safely between S1 and R1 (not near edges)
         if close > s1 + margin and close < r1 - margin:
             score += 3
-            rationale.append("Safely between S1 and R1 — low pivot risk")
+            rationale.append("Safely between S1 and R1 - low pivot risk")
 
         # Above pivot with room to R2 (bullish continuation)
         if close > pivot and r2 is not None and close < r2 - margin:
             score += 2
-            rationale.append(f"Above pivot, below R2({r2:.2f}) — bullish continuation zone")
+            rationale.append(f"Above pivot, below R2({r2:.2f}) - bullish continuation zone")
 
     return min(score, 5), rationale
 
 
 def compute_volatility_score(high: float, low: float, close: float) -> tuple[int, list[str]]:
-    """Volatility scoring — max 10 points.
+    """Volatility scoring - max 10 points.
 
     ATR-like measure: (high - low) / close ratio.
-    Moderate volatility (2–5%) → optimal for trading (+7)
-    Very high (>8% intraday) → risky (-penalty later, +3 base)
-    Very low (<1%) → no opportunity (+0)
+    Moderate volatility (2-5%) -> optimal for trading (+7)
+    Very high (>8% intraday) -> risky (-penalty later, +3 base)
+    Very low (<1%) -> no opportunity (+0)
     """
     score = 0
     rationale: list[str] = []
@@ -242,7 +242,7 @@ def compute_volatility_score(high: float, low: float, close: float) -> tuple[int
             rationale.append(f"Optimal intraday volatility ({atr_like:.1f}%)")
         elif atr_like > 5.0 and atr_like <= 8.0:
             score += 5
-            rationale.append(f"Elevated volatility ({atr_like:.1f}%) — watch risk")
+            rationale.append(f"Elevated volatility ({atr_like:.1f}%) - watch risk")
 
     return min(score, 10), rationale
 
@@ -250,11 +250,11 @@ def compute_volatility_score(high: float, low: float, close: float) -> tuple[int
 def compute_technical_summary_score(
     close: float, open_price: float, high: float, low: float
 ) -> tuple[int, list[str]]:
-    """Technical summary scoring — max 5 points.
+    """Technical summary scoring - max 5 points.
 
     Candlestick pattern recognition:
-      Bullish engulfing / hammer → +3
-      Close in upper quarter of range → +2
+      Bullish engulfing / hammer -> +3
+      Close in upper quarter of range -> +2
     """
     score = 0
     rationale: list[str] = []
@@ -267,12 +267,12 @@ def compute_technical_summary_score(
         # Hammer: small body at top, long lower shadow (>2× body)
         if upper_shadow < 5 and lower_shadow > body and lower_shadow > 3:
             score += 3
-            rationale.append("Hammer candlestick — bullish reversal signal")
+            rationale.append("Hammer candlestick - bullish reversal signal")
 
         # Close in upper quarter of daily range
         if close >= low + (high - low) * 0.75:
             score += 2
-            rationale.append("Close in upper 25% of range — strong close")
+            rationale.append("Close in upper 25% of range - strong close")
 
     return min(score, 5), rationale
 
@@ -280,10 +280,10 @@ def compute_technical_summary_score(
 def apply_penalties(rsi: Optional[float], volume: float, volume_avg_20: float, ema20: Optional[float], ema50: Optional[float]) -> tuple[int, list[str]]:
     """Apply penalty system from spec.
 
-    RSI > 80 → -10
-    RSI < 35 → -10
-    Volume low (<60% of avg) → -10
-    EMA20 < EMA50 → -20
+    RSI > 80 -> -10
+    RSI < 35 -> -10
+    Volume low (<60% of avg) -> -10
+    EMA20 < EMA50 -> -20
     """
     total_penalty = 0
     reasons: list[str] = []
@@ -303,7 +303,7 @@ def apply_penalties(rsi: Optional[float], volume: float, volume_avg_20: float, e
     if ema20 is not None and ema50 is not None and PENALTIES["ema_penalize_gap"]:
         if ema20 < ema50:
             total_penalty += 20
-            reasons.append("EMA20 < EMA50 — bearish structure")
+            reasons.append("EMA20 < EMA50 - bearish structure")
 
     return -total_penalty, reasons
 
@@ -326,7 +326,7 @@ def score_quote(quote: dict) -> dict:
     r1 = quote.get("r1")
     s1 = quote.get("s1")
 
-    # Volume average — require explicitly; skip volume component if absent.
+    # Volume average - require explicitly; skip volume component if absent.
     raw_volume_avg_20 = quote.get("volume_avg_20")
     volume_avg_20: Optional[float] = None
     if raw_volume_avg_20 is not None and raw_volume_avg_20 > 0:
@@ -339,7 +339,7 @@ def score_quote(quote: dict) -> dict:
         volume_score_val, volume_reasons = compute_volume_score(volume, volume_avg_20)
     else:
         volume_score_val = 0
-        volume_reasons = ["volume_avg_20 missing — component skipped"]
+        volume_reasons = ["volume_avg_20 missing - component skipped"]
     ema_struct_score, ema_reasons = compute_ema_structure_score(close, ema20, ema50, ema200)
     pivot_score_val, pivot_reasons = compute_pivot_score(close, pivot, r1, s1)
     r2 = quote.get("r2")
@@ -386,7 +386,7 @@ def score_quotes(quotes: list[dict]) -> list[dict]:
 
 
 def select_top_picks(scores: list[dict], threshold: int = 80, top_n: int = 2) -> dict:
-    """Selection engine — picks stocks above threshold.
+    """Selection engine - picks stocks above threshold.
 
     Returns structured output per spec:
       - top_picks: up to N stocks with score > threshold
