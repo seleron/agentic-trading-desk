@@ -37,8 +37,9 @@ if [ -n "$OPEN_BRANCHES" ]; then
             fi
         fi
         if [ -n "$fix_file" ] && [ -f "$fix_file" ]; then
-             # Skip resolved/completed fix items
+             # Skip resolved/completed fix items (check multiple status patterns)
             if grep -q "✅.*RESOLVED" "$fix_file" 2>/dev/null || \
+               grep -qiE "✅.*(COMPLETE|RESOLVED)" "$fix_file" 2>/dev/null || \
                grep -qiE "^COMPLETE — " "$fix_file" 2>/dev/null; then
                 continue
             fi
@@ -57,40 +58,49 @@ for f in "$BACKLOG_DIR"/*.md; do
     [ ! -f "$f" ] && continue
     base=$(basename "$f")
     
-    # Skip README and fix items (already in priority feed)
-    [[ "$base" == "README.md" ]] && continue
-    [[ "$base" == *-*fix-pr* ]] && continue
+     # Skip README. Fix items are NOT skipped — they get rank 0 and sort first.
+      [[ "$base" == "README.md" ]] && continue
     
-    # Skip resolved/completed items — auto-resolved or manually marked done
-    if grep -q "✅.*RESOLVED" "$f" 2>/dev/null || \
-       grep -qiE "(COMPLETE|RESOLVED)" "$f" 2>/dev/null; then
-        continue
-    fi
+      # Skip resolved/completed items — auto-resolved or manually marked done
+      if grep -q "✅.*RESOLVED" "$f" 2>/dev/null || \
+         grep -qiE "^.*(COMPLETE|RESOLVED)" "$f" 2>/dev/null; then
+          continue
+      fi
     
-    rank=$(grep -m 1 -i '^rank:' "$f" 2>/dev/null | awk '{print $2}' || echo "999")
+      # Fix items always get rank 0 (highest priority) regardless of explicit rank field
+      is_fix="0"
+      [[ "$base" == *fix* ]] && is_fix="1"
+    
+      if [ "$is_fix" = "1" ]; then
+          rank="0"
+      else
+          rank=$(grep -m 1 -i '^rank:' "$f" 2>/dev/null | awk '{print $2}' || echo "999")
+      fi
     title=$(grep -m 1 -i '^title:' "$f" 2>/dev/null | sed 's/^title:\s*//' || echo "$base")
     
     echo "${rank} ${BACKLOG_DIR}/$base $title" >> "$PRIORITY_FILE"
 done
 
-# Sort by rank (numeric), then filename (alpha) and pick top item
+# Sort by rank (numeric), then filename (alpha). Deduplicate by filepath keeping first (Tier 1 entry preferred over Tier 2).
+DEDUPED=$(sort -k1,1n -k2,2 "$PRIORITY_FILE" | awk '!seen[$2]++')
+
 echo "=== AGENTIC-TRADING-DESK LOOP CONTEXT ==="
 echo "(generated $(date -u +%Y-%m-%dT%H:%M:%SZ))"
 echo ""
 
-if [ ! -s "$PRIORITY_FILE" ]; then
+if [ -z "$DEDUPED" ]; then
     echo "No backlog items found. Create ranked items in backlog/ directory."
     exit 0
 fi
 
 # Show all candidates for transparency
 echo "--- All Candidates ---"
-sort -k1,1n -k2,2 "$PRIORITY_FILE" | while read line; do
+echo "$DEDUPED" | while read line; do
     echo "  $line"
 done
 echo ""
 
-TOP_ITEM=$(sort -k1,1n -k2,2 "$PRIORITY_FILE" | head -1)
+TOP_ITEM=$(echo "$DEDUPED" | head -1)
 RANK=$(echo "$TOP_ITEM" | awk '{print $1}')
 FILEPATH=$(echo "$TOP_ITEM" | awk '{print $2}')
 TITLE=$(echo "$TOP_ITEM" | cut -d' ' -f3-)
