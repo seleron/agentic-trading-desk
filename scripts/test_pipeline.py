@@ -149,8 +149,11 @@ class TestBacktest(unittest.TestCase):
             pillar_weights={"trend": 0.4, "momentum": 0.3, "macro_sentiment": 0.3},
             capital=10000.0,
         )
+        # Pillar-weighted mode should produce a valid BacktestResult with numeric metrics.
+        self.assertIsInstance(r, backtest.BacktestResult)
         self.assertGreaterEqual(r.total_trades, 0)
         self.assertIsInstance(r.total_return_pct, float)
+        self.assertIsInstance(r.sharpe_ratio, (float, type(None)))
 
 
 class TestEodAndLearning(unittest.TestCase):
