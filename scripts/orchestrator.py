@@ -175,45 +175,31 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
     with open(os.path.join(output_dir, "scores.json"), "w") as f:
         json.dump(scores_output, f, indent=2)
 
-   # Step 3: Multi-timeframe verification (merged: HEAD step numbering + PR2 richer analysis)
+    # Step 3: Multi-timeframe verification — weekly trend confirmation for daily signals
     print("[3/9] Running multi-timeframe analysis...")
-    from multi_timeframe import compute_single_tf_score, multi_timeframe_analysis
+    from multi_timeframe import compute_single_tf_score
 
     mtf_consensus = {}
-    for symbol in ohlcv_data:
-        data = ohlcv_data[symbol]
-        if not data.get("ohlcv_all"):
-            continue
+    for quote in quotes:
+        symbol = quote["symbol"]
+        data = ohlcv_data.get(symbol, {})
+        closes_daily = [c["close"] for c in data.get("ohlcv_all", []) if c.get("close")]
 
-        daily_closes = [c["close"] for c in data["ohlcv_all"][-250:] if isinstance(c, dict) and c.get("close")]
-
-        # Fetch weekly closes (need ~104 weeks of data)
+        # Fetch weekly data for multi-timeframe verification (via yfinance fallback)
         try:
             import yfinance as _yf  # noqa: F811 — local to this block only
-            wk = _yf.Ticker(symbol).history(period="5y", interval="1wk")
-            weekly_closes = [c for c in wk["Close"].tolist() if not math.isnan(c)] if "Close" in wk else []
+            hist_wk = _yf.Ticker(symbol).history(period="5y", interval="1wk")
+            closes_weekly = [float(c) for c in hist_wk["Close"] if not math.isnan(c)] if len(hist_wk) > 0 else []
         except Exception:
-            # Use daily data as proxy (single-timeframe fallback)
-            weekly_closes = daily_closes
+            # If yfinance fails, use daily data as proxy (single-timeframe fallback)
+            closes_weekly = closes_daily
 
-        timeframe_scores = {}
-        if daily_closes and len(daily_closes) >= 50:
-            timeframe_scores["1d"] = daily_closes
-        if weekly_closes and len(weekly_closes) >= 50:
-            timeframe_scores["1w"] = weekly_closes
-
-        if timeframe_scores:
-            mtf_result = multi_timeframe_analysis(symbol, timeframe_scores)
-            mtf_consensus[symbol] = {
-                "consensus_score": mtf_result.get("consensus_score", 0),
-                "recommendation": mtf_result.get("recommendation", "UNKNOWN"),
-                "aligned": mtf_result.get("all_timeframes_aligned", False),
-            }
-
-    # Ensure every symbol has an MTF entry (default if no data)
-    for sym in ohlcv_data:
-        if sym not in mtf_consensus:
-            mtf_consensus[sym] = {"consensus_score": 0, "recommendation": "NO_DATA", "aligned": False}
+        weekly_score = compute_single_tf_score(closes_weekly) if closes_weekly else {"score": 0}
+        mtf_consensus[symbol] = {
+            "weekly_trend_score": weekly_score.get("score", 0),
+            "daily_bullish": quote.get("close", 0) > (quote.get("ema20") or 0),
+            "weekly_bullish": weekly_score.get("score", 0) >= 5,
+        }
 
     # Step 4: Selection (top picks + NO TRADE DAY)
     print("[4/9] Selecting top picks...")
@@ -272,27 +258,16 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
 
     # Step 7b: Backtesting for top picks — run historical walk-forward on selected symbols
     print("[9/9] Running backtests on historical data...")
-    from backtest import run_backtest as bt_run, BacktestResult
+    from backtest import run_backtest as bt_run
 
     backtest_results = []
-    pillar_weights = config.get("backtest", {}).get(
-        "pillar_weights", {"trend": 0.4, "momentum": 0.35, "macro_sentiment": 0.25}
-    )
 
     for pick in selection.get("top_picks", []):
         symbol = pick["symbol"]
         try:
-            # Try ccxt first (same source as live pipeline), fall back to yfinance
-            hist_raw = None
-            try:
-                hist_raw = fetch_bist_data(symbol, timeframe="1d", limit=450)
-            except Exception:
-                pass  # ccxt fallback below
-
+            hist_raw = fetch_bist_data(symbol, timeframe="1d", limit=450)
             if not hist_raw or len(hist_raw) < 200:
-                # Fallback to yfinance for BIST symbols (ccxt lacks many Turkish stocks)
                 import yfinance as _yf  # noqa: F811 — local to this block only
-
                 hist_yf = _yf.Ticker(symbol).history(period="5y")
                 if len(hist_yf) < 200:
                     print(f"  [WARN] Backtest: insufficient history for {symbol}", file=sys.stderr)
@@ -309,7 +284,7 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
                     })
             else:
                 bars = []
-                for bar in hist_raw[:350]:  # cap at ~350 bars to keep runtime reasonable
+                for bar in hist_raw[:350]:
                     bars.append({
                         "date": bar.get("date", ""),
                         "open": float(bar["open"]),
@@ -321,6 +296,7 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
 
             result = bt_run(
                 bars=bars,
+                pillar_weights={"trend": 0.4, "momentum": 0.35, "macro_sentiment": 0.25},
                 capital=10000.0,
             )
 

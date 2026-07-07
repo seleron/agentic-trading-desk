@@ -116,9 +116,16 @@ def calculate_max_drawdown(equity_curve: list[float]) -> tuple[float, int, int]:
     return round(max_dd * 100, 2), dd_start, dd_end
 
 
+_DEFAULT_PILLAR_WEIGHTS: dict[str, float] = {
+    "trend": 0.4,
+    "momentum": 0.35,
+    "macro_sentiment": 0.25,
+}
+
+
 def run_backtest(
     bars: list[dict],
-    pillar_weights: dict,
+    pillar_weights: Optional[dict[str, float]] = None,
     capital: float = 10000.0,
     commission_pct: float = 0.001,
     slippage_pct: float = 0.0005,
@@ -128,7 +135,9 @@ def run_backtest(
 
     Args:
         bars: List of dicts with 'date', 'open', 'high', 'low', 'close', 'volume'
-        pillar_weights: Dict with 'trend', 'momentum', 'macro_sentiment' keys
+        pillar_weights: Dict with 'trend', 'momentum', 'macro_sentiment' keys.
+            When *None* the backtest falls through to full 7-component
+            scoring_engine mode (standard standalone usage).
         capital: Starting capital
         commission_pct: Commission per trade as fraction (0.1%% = 0.001)
         slippage_pct: Slippage per trade as fraction
@@ -162,13 +171,16 @@ def run_backtest(
     max_consec_wins = 0
     max_consec_losses = 0
 
+    _pw = pillar_weights or _DEFAULT_PILLAR_WEIGHTS
+
     for i in range(1, len(bars)):
         bar = bars[i]
         prev_bar = bars[i - 1]
         price = bar["close"]
 
-        # Calculate composite score from pillar weights (simplified)
-        if i >= 20:
+        # When pillar_weights is explicitly provided use the fast pillar-weighted
+        # path; otherwise fall through to full scoring_engine mode for every bar.
+        if pillar_weights and i >= 20:
             recent_closes = [bars[j]["close"] for j in range(max(0, i - 20), i)]
             sma_short = sum(recent_closes[-10:]) / min(10, len(recent_closes))
             sma_long = sum(recent_closes) / len(recent_closes)
@@ -181,9 +193,9 @@ def run_backtest(
             macro_score = 0  # Simplified: neutral macro for backtest
 
             # Accept both "macro_sentiment" and the CLI's "macro" alias.
-            w_trend = pillar_weights.get("trend", 0.4)
-            w_mom = pillar_weights.get("momentum", 0.35)
-            w_macro = pillar_weights.get("macro_sentiment", pillar_weights.get("macro", 0.25))
+            w_trend = _pw.get("trend", 0.4)
+            w_mom = _pw.get("momentum", 0.35)
+            w_macro = _pw.get("macro_sentiment", _pw.get("macro", 0.25))
 
             composite = (
                 w_trend * trend_score +
