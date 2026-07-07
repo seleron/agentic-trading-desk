@@ -141,7 +141,15 @@ def run_backtest(
     if not bars or len(bars) < 50:
         raise ValueError("Need at least 50 bars for backtesting")
 
-    ENTRY_THRESHOLD = 0.48  # threshold on [-1, +1] scale; ~74/100 score required for entry
+    # Composite entry/exit gates on the [-1, +1] scale.
+    # The full-engine (score-remapped) path uses SPLIT thresholds so entry corresponds to
+    # score >= 48 and exit to score <= 26. A single symmetric gate on the remapped composite
+    # silently raised the entry bar to score >= 74. Legacy pillar mode and the ROC fallback
+    # keep their original symmetric ±0.48 gate (their composites are not score remaps).
+    SYMMETRIC_ENTRY, SYMMETRIC_EXIT = 0.48, -0.48
+    # Gates placed on half-integer score boundaries (47.5, 26.5) so integer scores map
+    # unambiguously: enter at score >= 48, exit at score <= 26. (composite = (score/100)*2 - 1)
+    SCORE_ENTRY, SCORE_EXIT = -0.05, -0.47
 
     # Initialize state
     equity = capital
@@ -185,6 +193,7 @@ def run_backtest(
             w_macro = pillar_weights.get("macro_sentiment", pillar_weights.get("macro", 0.25))
 
             composite = (w_trend * trend_score + w_mom * mom_score + w_macro * macro_score)
+            entry_threshold, exit_threshold = SYMMETRIC_ENTRY, SYMMETRIC_EXIT
         else:
             # Full 7-component scoring via indicators + scoring_engine — standalone mode
             try:
@@ -224,24 +233,26 @@ def run_backtest(
                 }
 
                 scored = score_quote(quote)
-                # Remap [0,100] → [-1,+1]: (score/100)*2 - 1 so exit threshold is symmetric
+                # Remap [0,100] → [-1,+1]: (score/100)*2 - 1
                 composite = (scored.get("score", 50.0) / 100.0) * 2.0 - 1.0
+                entry_threshold, exit_threshold = SCORE_ENTRY, SCORE_EXIT
 
             except Exception:
                 # Fallback: simple ROC-based heuristic if scoring imports fail
                 roc = (price - recent_closes[0]) / recent_closes[0] if recent_closes and recent_closes[0] != 0 else 0
                 composite = max(-1.0, min(1.0, roc * 5))
+                entry_threshold, exit_threshold = SYMMETRIC_ENTRY, SYMMETRIC_EXIT
 
-        # Entry signal: composite score crosses above threshold
-        if not in_position and composite >= ENTRY_THRESHOLD:
+        # Entry signal: composite score crosses above the (mode-specific) entry gate
+        if not in_position and composite >= entry_threshold:
             entry_fill_price = price * (1 + slippage_pct)  # pay slippage on entry
             position_size = equity * 0.95 / entry_fill_price
             equity -= position_size * entry_fill_price * commission_pct  # Commission on entry
             in_position = True
             trade_log.append({"type": "entry", "price": round(entry_fill_price, 6), "index": i})
 
-        # Exit signal: composite drops below threshold OR 2% stop below entry fill
-        elif in_position and (composite <= -ENTRY_THRESHOLD or price < entry_fill_price * 0.98):
+        # Exit signal: composite drops below the (mode-specific) exit gate OR 2% stop below entry fill
+        elif in_position and (composite <= exit_threshold or price < entry_fill_price * 0.98):
             exit_price = price * (1 - slippage_pct)
             proceeds = position_size * exit_price
             equity += proceeds - proceeds * commission_pct  # Commission on exit
