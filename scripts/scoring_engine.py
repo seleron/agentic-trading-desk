@@ -147,7 +147,7 @@ def compute_ema_structure_score(
 ) -> tuple[int, list[str]]:
     """EMA structure scoring - max 15 points.
 
-    Clean bullish alignment (20 > 50 > 200) -> +15
+    Clean bullish alignment (20 > 50 > 200) -> +10
     Partial alignments get proportional credit.
     Close near EMA20 (< 2% deviation) -> +bonus for pullback entry opportunity.
     """

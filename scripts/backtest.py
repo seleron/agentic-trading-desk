@@ -141,7 +141,7 @@ def run_backtest(
     if not bars or len(bars) < 50:
         raise ValueError("Need at least 50 bars for backtesting")
 
-    ENTRY_THRESHOLD = 0.48  # slightly below max composite ~0.9 to allow entries
+    ENTRY_THRESHOLD = 0.48  # threshold on [-1, +1] scale; ~74/100 score required for entry
 
     # Initialize state
     equity = capital
@@ -224,7 +224,8 @@ def run_backtest(
                 }
 
                 scored = score_quote(quote)
-                composite = scored.get("score", 0.48) / 100.0  # normalize to ~[0, 1] range
+                # Remap [0,100] → [-1,+1]: (score/100)*2 - 1 so exit threshold is symmetric
+                composite = (scored.get("score", 50.0) / 100.0) * 2.0 - 1.0
 
             except Exception:
                 # Fallback: simple ROC-based heuristic if scoring imports fail
