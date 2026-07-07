@@ -24,13 +24,15 @@ Claude Opus 4.8 requested changes on PR #3 (round 1).
 \
 ## Required fixes
 \
-- ["Remove the zero-byte scratch artifacts ema20 and ema50 at repo root (they are staged for deletion in git status but must actually be gone from the branch)."
-- "Resolve the yfinance premise in orchestrator.py: the backtest fallback still does an unguarded runtime `import yfinance as _yf` but yfinance is not in requirements.txt — either declare it as a dependency or drop the fallback and source history solely from the ccxt fetch_bist_data path so the backtest degrades safely instead of raising ImportError."
-- "Fix the indentation regressions in orchestrator.py: the `# Step 3:` comment sits at 3 spaces and the `\"mtf_verification\"` dict key at 7 spaces — align both to the surrounding block."
-- "Reconcile the incidental comment/step-label churn in orchestrator.py (# Step 3/# Step 4 relabeling and reordering of eod_report/mtf_verification output keys) that is unrelated to the scoring change."
-- "Split into one concern per PR as requested across every prior round: land pivot_risk scoring alone (scoring_engine.py weight rebalance + test_scoring_engine.py + test_data_quality.py pivot tests + orchestrator r2/s2 rounding); move the Telegram notification_router integration
--  the new run_intraday_loop
--  and the backtest Optional-weights change into their own reviewed PRs."]
+- ["Resolve the yfinance premise: orchestrator.py's backtest fallback does an unguarded `import yfinance as _yf` (raising ImportError at runtime whenever ccxt returns <200 bars)
+-  but yfinance is not in requirements.txt — either add yfinance to requirements.txt or drop the fallback and degrade safely (skip the symbol) using only the ccxt fetch_bist_data path."
+- "Split into one concern per PR: land pivot_risk scoring alone (scoring_engine.py weight rebalance + test_scoring_engine.py + test_data_quality.py pivot tests + orchestrator r2/s2 rounding); move the intraday run_intraday_loop scanner
+-  the backtest.py Optional-weights change
+-  and the notification_router Telegram integration into their own separately-reviewed PRs."
+- "Reconcile the incidental orchestrator.py churn unrelated to scoring: the `# Step 3`/`# Step 4` comment relabeling and the reordering of output dict keys (mtf_verification/backtest_results/eod_report) is noise — drop it or keep it consistent."
+- "Confirm the intraday alert path re-routes notifications with the same telegram_config/trade_plans as the single-pass main() — currently run_intraday_loop calls route_notifications(curr_scores_output
+-  curr_selection) with no telegram_config
+-  so intraday alerts will never actually reach Telegram; wire the config through or document that this is intentional."]
 \
 
 \
