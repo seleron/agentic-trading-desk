@@ -176,7 +176,7 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
     with open(os.path.join(output_dir, "scores.json"), "w") as f:
         json.dump(scores_output, f, indent=2)
 
-   # Step 3: Multi-timeframe verification — weekly trend confirmation for daily signals
+    # Step 3: Multi-timeframe verification — weekly trend confirmation for daily signals
     print("[3/9] Running multi-timeframe analysis...")
     from multi_timeframe import compute_single_tf_score
 
@@ -319,7 +319,7 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
         "selection": selection,
         "trade_plans": trade_plans,
         "notifications_count": len(notifications),
-       "mtf_verification": mtf_consensus,
+        "mtf_verification": mtf_consensus,
         "backtest_results": backtest_results,
         "eod_report": eod_report if not eod_report.get("no_trades") else None,
         "learning_ready": learning_result.get("ready", False),
