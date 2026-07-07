@@ -116,6 +116,18 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
 
     if not ohlcv_data:
         return {"error": "No data collected from ccxt", "symbols_checked": symbols}
+
+    # Load admin corrections before scoring (so overrides apply to computed scores)
+    print("[1.5/9] Loading admin corrections...")
+    try:
+        from admin_corrections import load_corrections_from_config, is_ignored as _is_ignored
+        admin_corrections = load_corrections_from_config(config or {})
+        # Filter out ignored symbols early
+        ohlcv_data = {k: v for k, v in ohlcv_data.items() if not _is_ignored(k, admin_corrections)}
+    except Exception as e:
+        print(f"  [WARN] Admin corrections load failed ({e}), continuing without overrides", file=sys.stderr)
+        admin_corrections = {}
+
     print("[2/9] Computing features and scoring...")
     from scoring_engine import score_quotes
     import indicators as indicators_engine
@@ -171,7 +183,7 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
 
         quotes.append(quote)
 
-    scores_output = score_quotes(quotes)
+    scores_output = score_quotes(quotes, admin_corrections=admin_corrections)
     with open(os.path.join(output_dir, "scores.json"), "w") as f:
         json.dump(scores_output, f, indent=2)
 

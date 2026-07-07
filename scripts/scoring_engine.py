@@ -309,7 +309,7 @@ def apply_penalties(rsi: Optional[float], volume: float, volume_avg_20: float, e
     return -total_penalty, reasons
 
 
-def score_quote(quote: dict) -> dict:
+def score_quote(quote: dict, correction=None) -> dict:
     """Score a single stock quote. Returns full scoring breakdown."""
     close = quote["close"]
     high = quote.get("high", close)
@@ -361,7 +361,7 @@ def score_quote(quote: dict) -> dict:
     all_reasons = (trend_reasons + momentum_reasons + volume_reasons + ema_reasons +
                    pivot_reasons + pivot_risk_reasons + vol_reasons + tech_reasons + penalty_reasons)
 
-    return {
+    result = {
         "symbol": quote.get("symbol", "UNKNOWN"),
         "date": quote.get("date", ""),
         "score": final_score,
@@ -379,10 +379,77 @@ def score_quote(quote: dict) -> dict:
         "rationale": all_reasons,
     }
 
+    # Apply admin correction if present (must import locally to avoid circular deps)
+    result["admin_override"] = None
+    if correction is not None:
+        _apply_correction(result, correction)
 
-def score_quotes(quotes: list[dict]) -> list[dict]:
-    """Score a batch of stock quotes."""
-    return [score_quote(q) for q in quotes]
+    return result
+
+
+def _apply_correction(score: dict, correction) -> None:
+    """Apply a single AdminCorrection to a scored quote dict (in-place)."""
+    symbol = score.get("symbol", "")
+    original_score = score["score"]
+
+    otype = getattr(correction, "override_type", None) or ""
+    rationale = getattr(correction, "rationale", "") or ""
+
+    if otype == "force_buy":
+        score["score"] = max(score["score"], 95)
+        score["admin_override"] = {
+            "type": "force_buy", "rationale": rationale,
+            "original_score": original_score,
+        }
+
+    elif otype == "force_sell":
+        score["score"] = min(score["score"], 15)
+        score["admin_override"] = {
+            "type": "force_sell", "rationale": rationale,
+            "original_score": original_score,
+        }
+
+    elif otype == "ignore":
+        score["score"] = -1  # below any threshold
+        score["admin_override"] = {
+            "type": "ignore", "rationale": rationale,
+            "original_score": original_score,
+        }
+
+    elif otype == "custom_weight_modifier":
+        raw_weights = dict(score.get("raw_components", {}))
+        custom_w = getattr(correction, "weights", {}) or {}
+        total_raw = sum(raw_weights.values()) if raw_weights else 1
+        adjusted_total = 0.0
+
+        for comp, val in raw_weights.items():
+            new_weight = custom_w.get(comp)
+            if new_weight is not None:
+                adjusted_total += val * (new_weight / COMPONENT_WEIGHTS.get(comp, 1))
+            else:
+                adjusted_total += val
+
+        # Clamp the adjusted score to [0, 100] range
+        new_score = max(0, min(100, adjusted_total + score["penalties_applied"]))
+        score["score"] = int(round(new_score))
+        score["admin_override"] = {
+            "type": "custom_weight_modifier", "rationale": rationale,
+            "original_score": original_score, "adjusted_score": new_score,
+        }
+
+
+def score_quotes(quotes: list[dict], admin_corrections=None) -> list[dict]:
+    """Score a batch of stock quotes.
+
+    Args:
+        quotes: List of quote dicts to score.
+        admin_corrections: Optional dict mapping symbol → AdminCorrection for applying overrides.
+
+    Returns:
+        List of scored quote dicts with 'admin_override' field added where applicable.
+    """
+    corrections = admin_corrections or {}
+    return [score_quote(q, corrections.get(q.get("symbol", ""))) for q in quotes]
 
 
 def select_top_picks(scores: list[dict], threshold: int = 80, top_n: int = 2) -> dict:

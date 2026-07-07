@@ -111,3 +111,12 @@ telegram:
   chat_id: ""
   quiet_hours_start: 23
   quiet_hours_end: 6
+
+# ── Admin Corrections (manual overrides) ─────────────────────────────────────
+# Per-ticker override types: force_buy, force_sell, ignore, custom_weight_modifier.
+# Overrides are additive — they adjust the final score/decision without replacing scoring.
+admin_corrections: {}
+  # Example:
+  #   THYAO.IS: {type: "force_buy", rationale: "earnings beat"}
+  #   GARAN.IS: {type: "ignore", rationale: "illiquid today"}
+  #   AKBNK.IS: {type: "custom_weight_modifier", weights: {trend: 30, momentum: 15}}
