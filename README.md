@@ -8,26 +8,52 @@ The ruling principle is: **the AI fetches data and interacts with the user; the 
 
 ## 🚀 Project Architecture
 
-The project is designed to operate locally and modularly. All technical indicator computations are delegated to Python 3 scripts that only use the Python standard library (`stdlib`), ensuring speed and zero network dependencies during execution.
+The project is designed to operate locally and modularly. All technical indicator computations are delegated to Python 3 scripts that only use the Python standard library (`stdlib`), ensuring speed and zero network dependencies during execution (except `data_fetcher.py` which requires ccxt for exchange connectivity).
 
 ```mermaid
 graph TD
-    A[Robinhood MCP / API] -- Price Historicals / Quotes --> B[Claude / Agentic Core]
+    A[ccxt Exchange API] -- OHLCV Data --> B[Claude / Agentic Core]
     C[Investing.com / Web] -- 10Y-2Y Spread / News --> B
-    B -- JSON of Daily Closes --> D[scripts/macro_pillar.py]
-    B -- JSON of Closes + Holding status --> E[scripts/score.py]
-    D -- Injected Macro Score --> E
-    E -- Raw Indicators --> F[scripts/indicators.py]
-    E -- Three-Pillar Scorecard + Suggested Decision --> B
-    B -- Visualized Proposal --> G[User]
-    G -- Order Confirmation --> A
+    D[data_fetcher.py] -- Multi-exchange data --> B
+    E[multi_timeframe.py] -- MTF confirmation --> B
+    B -- JSON of Daily Closes --> F[scripts/macro_pillar.py]
+    B -- JSON of Closes + Holding status --> G[scripts/score.py]
+    F -- Injected Macro Score --> G
+    G -- Raw Indicators --> H[scripts/indicators.py]
+    G -- Three-Pillar Scorecard + Decision --> I[scripts/trade_plan.py]
+    I -- Entry/Stop/Targets Plan --> B
+    B -- Visualized Proposal --> J[User]
+    J -- Order Confirmation --> A
+    K[weight_optimizer.py] -- Optimal weights --> L[config.yaml]
+    M[backtest.py] -- Validation metrics --> L
 ```
+
+### Architecture Improvements Over Original
+* **Multi-exchange support** via ccxt — no longer tied to Robinhood
+* **BIST/Borsa Istanbul** support for Turkish market analysis
+* **Config-driven weights** in `config.yaml` instead of hardcoded values
+* **Weight optimization** loop — optimizer finds best pillar weights, writes back to config
+* **Multi-timeframe confirmation** prevents false signals from single-TF noise
+* **Structured trade plans** with position sizing, stop loss, and take profit targets
+* **Backtesting pipeline** for validating weight combinations before live deployment
 
 ### File Structure
 *   **[SKILL.md](SKILL.md)**: Operations manual and specific guardrails guiding the AI agent's actions.
+*   **[config.yaml](config.yaml)**: All pillar weights, scoring thresholds, and data fetcher settings.
+*   **[requirements.txt](requirements.txt)**: External dependencies (ccxt, pyyaml).
 *   **[scripts/indicators.py](scripts/indicators.py)**: Mathematical engine to calculate technical indicators without visual estimations.
 *   **[scripts/macro_pillar.py](scripts/macro_pillar.py)**: Macro regime detector and cross-asset sentiment scorer.
 *   **[scripts/score.py](scripts/score.py)**: Evaluator of the three-pillar framework and exit/entry decision engine.
+*   **[scripts/data_fetcher.py](scripts/data_fetcher.py)**: Universal data fetcher using ccxt for multi-exchange support (Binance, Coinbase, Kraken, BIST).
+*   **[scripts/multi_timeframe.py](scripts/multi_timeframe.py)**: Multi-timeframe confirmation engine — analyzes trend alignment across timeframes.
+*   **[scripts/trade_plan.py](scripts/trade_plan.py)**: Structured trade plan generator — entry/stop/targets with position sizing and risk management.
+*   **[scripts/weight_optimizer.py](scripts/weight_optimizer.py)**: Hyperopt-style weight optimizer — grid/random search for optimal pillar weights.
+*   **[scripts/backtest.py](scripts/backtest.py)**: Walk-forward backtesting engine — Sharpe, Sortino, max drawdown, profit factor metrics.
+*   **[scripts/scoring_engine.py](scripts/scoring_engine.py)**: 7-component scoring engine for BIST AI Trader v1.0 (Trend/Momentum/Volume/EMA/Pivot/Volatility/Tech Summary + penalties).
+*   **[scripts/notification_router.py](scripts/notification_router.py)**: Tiered alert system — strong buy / watchlist / no-trade based on score thresholds.
+*   **[scripts/eod_module.py](scripts/eod_module.py)**: End-of-Day PnL tracking with SQLite database — win rates, drawdowns, trade logs.
+*   **[scripts/learning_module.py](scripts/learning_module.py)**: Auto-weight adjustment every 50 trades — analyzes feature performance and recommends weight updates.
+*   **[scripts/orchestrator.py](scripts/orchestrator.py)**: Full pipeline orchestrator — chains all modules for daily automated BIST scans.
 
 ---
 
@@ -106,6 +132,79 @@ To obtain the complete three-pillar scorecard and action suggestion for the Agen
 python3 scripts/score.py ticker_input.json        # human-readable table
 python3 scripts/score.py ticker_input.json --json  # machine-readable output
 python3 scripts/score.py                           # self-test with synthetic data
+```
+
+### 4. Multi-Exchange Data Fetching (NEW)
+Universal data fetcher using ccxt for any exchange:
+```bash
+# Single symbol
+python3 scripts/data_fetcher.py BINANCE BTC/USDT 1d --json
+
+# BIST stock
+python3 scripts/data_fetcher.py mexc THYAO/TRY 1d --json
+
+# All macro ETFs at once
+python3 scripts/data_fetcher.py binance SPY/USD 1d --macro
+```
+
+### 5. Multi-Timeframe Confirmation (NEW)
+Analyze trend alignment across multiple timeframes:
+```bash
+cat mtf_input.json | python3 scripts/multi_timeframe.py --stdin
+```
+*Input format:*
+```json
+{
+  "symbol": "BTC/USDT",
+  "timeframes": {
+    "1d": [close_prices...],
+    "4h": [close_prices...],
+    "15m": [close_prices...]
+  }
+}
+```
+
+### 6. Trade Plan Generator (NEW)
+Generate structured trade plans with entry/stop/targets:
+```bash
+python3 scripts/trade_plan.py --score scorecard.json --capital 10000
+python3 scripts/trade_plan.py --stdin < scorecard.json
+```
+
+### 7. Weight Optimizer (NEW)
+Find optimal pillar weights via grid or random search:
+```bash
+# Grid search over weight combinations
+python3 scripts/weight_optimizer.py --mode grid \
+    --input history.json --output best_weights.json
+
+# Random search with target Sharpe ratio
+python3 scripts/weight_optimizer.py --mode optimize \
+    --input history.json --iterations 1000 --target-sharpe 1.5
+```
+
+### 8. Backtesting Engine (NEW)
+Walk-forward backtesting with slippage and commission:
+```bash
+python3 scripts/backtest.py --input bars.json \
+    --weights trend=0.4 momentum=0.35 macro_sentiment=0.25 \
+    --capital 10000 --output results.json
+```
+
+*Output includes:* Sharpe ratio, Sortino ratio, max drawdown, win rate, profit factor, Calmar ratio, and detailed trade statistics.
+
+### 9. Configuration (NEW)
+All weights and parameters are now in `config.yaml`:
+```yaml
+pillar_weights:
+  trend: 0.40
+  momentum: 0.35
+  macro_sentiment: 0.25
+# ... see config.yaml for full options
+
+data_fetcher:
+  default_exchange: "binance"
+  default_timeframe: "1d"
 ```
 *Expected format for `ticker_input.json`:*
 ```json
@@ -211,3 +310,80 @@ To complement the purely technical nature of the deterministic scripts, the AI a
     *   **Individual** (Margin Account): Core passive long-term investing.
 3.  **T+1 Liquidity**: In the cash account, only settled capital counts as buying power before placing buy orders.
 4.  **Mandatory Confirmation**: Every order proposed by the bot must pass through a simulation check with `review_*_order` and be approved by the user before executing `place_*_order`.
+
+---
+
+## 🧠 BIST AI Trader v1.0 — Full Autonomous Agent Pipeline
+
+A separate pipeline for Bursa Istanbul (BIST) stock analysis, per the v1.0 spec: every trading day at 08:45, scan BIST50 stocks → compute technical features → score each on a 0–100 scale → select top 2 → generate trade plans → end-of-day PnL tracking → auto-weight optimization every 50 trades.
+
+### Architecture
+
+```
+Data Collector (ccxt)
+    ↓ Feature Engine (RSI/MACD/EMA/Pivot/Volume per symbol)
+        ↓ Scoring Engine (7-component weighted formula + penalties)
+            ↓ Selection Engine (Top-2 picks, NO TRADE DAY fallback)
+                ↓ Trade Plan Generator (entry/stop/target/risk-reward JSON)
+                    ↓ Notification Router (tiered: strong buy / watchlist / no-trade)
+                        ↓ EOD Module (PnL database, win-rate tracking)
+                            ↓ Learning Module (auto-weight adjustment after 50 trades)
+```
+
+### New Scripts
+
+| Script | Purpose |
+|--------|---------|
+| `scoring_engine.py` | 7-component scoring: Trend(25)+Momentum(20)+Volume(15)+EMA Structure(15)+Pivot Position(10)+Volatility(10)+Technical Summary(5). Penalty system for RSI extremes, low volume, bearish EMA. |
+| `notification_router.py` | Tiered alerts: >85 = strong buy signal, 70–85 = watchlist, <70 = no trade. |
+| `eod_module.py` | End-of-Day PnL tracking via SQLite database. Records entry/exit/PnL/win-rate per symbol per date. Generates daily performance reports. |
+| `learning_module.py` | Every 50 completed trades: analyzes which features (RSI range, EMA structure, volume spike) produce best outcomes and recommends weight adjustments. |
+| `orchestrator.py` | Full pipeline orchestrator — chains all modules in one run. Use for daily automated scans. |
+
+### Usage
+
+```bash
+# Full daily scan (runs all 7 stages)
+python3 scripts/orchestrator.py \
+    --symbols EREGL.IS TUPRS.IS GARAN.IS THYAO.IS \
+    --output-dir ./outputs/
+
+# Scoring engine standalone (for testing)
+echo '[{"symbol":"EREGL","close":42,"ema20":41.5,"ema50":40,"rsi":62,"macd":0.3,"macd_signal":0.2,"volume":5e7,"high":42.5,"low":41}]' | python3 scripts/scoring_engine.py -i /dev/stdin
+
+# Notification routing
+python3 scripts/notification_router.py -i outputs/scores.json -o outputs/notifications.json
+
+# End-of-Day report
+python3 scripts/eod_module.py --db data/trades.db
+
+# Learning module (auto-weight adjustment)
+python3 scripts/learning_module.py --db data/trades.db
+```
+
+### Scoring Formula (7 Components, 0–100 scale)
+
+| Component | Max Points | Description |
+|-----------|------------|-------------|
+| Trend | 25 | EMA alignment + price position |
+| Momentum | 20 | RSI zone + MACD cross |
+| Volume | 15 | Volume vs 20-day average |
+| EMA Structure | 15 | Clean bullish stack + pullback entry detection |
+| Pivot Position | 10 | Support/resistance bounce opportunity |
+| Volatility | 10 | Optimal intraday range (ATR-like) |
+| Technical Summary | 5 | Candlestick patterns (hammer, strong close) |
+
+### Penalty System
+
+| Condition | Penalty |
+|-----------|---------|
+| RSI > 80 (overbought) | -10 |
+| RSI < 35 (oversold) | -10 |
+| Volume < 60% of 20-day avg | -10 |
+| EMA20 < EMA50 (bearish structure) | -20 |
+
+### Selection Logic
+
+- Stocks scoring ≥ 80 → candidate for top picks
+- Top 2 by score selected
+- Fewer than 2 qualify → "NO TRADE DAY" flag set

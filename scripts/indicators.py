@@ -6,18 +6,24 @@ DETERMINISTIC indicator engine for the trading desk's exact stack:
   EMA 20/50/200 · RSI-14 (Wilder) · MACD 12/26/9 · TRIX-15 (signal 9) · Bollinger 20/2
 
 Purpose: Claude should NEVER calculate these values by "reasoning" over bars.
-The correct flow is: Claude fetches raw bars via Robinhood MCP
-(get_equity_historicals, ~290 daily bars) -> passes them to this module ->
+The correct flow is: Claude fetches raw bars via ccxt data_fetcher
+(fetch_ohlcv, ~300 daily bars) -> passes them to this module ->
 numbers are computed, not estimated.
+
+Also handles NaN-safe forward-fill for gap-filled OHLCV and emits data quality warnings.
 
 stdlib only. Python 3.9+. Input: list of close prices old->new.
 For Bollinger %B precision, high/low can be passed, but close is enough.
 """
 from __future__ import annotations
+
 import json
+import logging
 import sys
 from statistics import pstdev
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 # --------------------------------------------------------------------------
@@ -145,6 +151,66 @@ def bollinger(close: list[float], period: int = 20, mult: float = 2.0):
 
 
 # --------------------------------------------------------------------------
+# NaN-safe forward-fill utility
+# --------------------------------------------------------------------------
+
+def forward_fill(
+    series: list[Optional[float]],
+    max_gap: int = 10,
+) -> tuple[list[Optional[float]], list[str]]:
+    """
+    Forward-fill None values in a numeric series up to *max_gap* consecutive Nones.
+
+    Args:
+        series: Numeric series potentially containing ``None`` (NaN-equivalent).
+        max_gap: Maximum number of consecutive ``None`` values that will be filled.
+                 Longer gaps remain as ``None`` and generate warnings.
+
+    Returns:
+        A tuple of ``(filled_series, warnings)`` where *warnings* is a list of
+        human-readable strings describing any issues encountered.
+    """
+    warnings: list[str] = []
+    n = len(series)
+    filled: list[Optional[float]] = list(series)  # shallow copy
+
+    i = 0
+    while i < n:
+        if series[i] is not None:
+            i += 1
+            continue
+        # Found a None — find the run length
+        gap_start = i
+        while i < n and series[i] is None:
+            i += 1
+        gap_len = i - gap_start
+
+        if gap_len > max_gap:
+            warnings.append(
+                f"Data quality warning: {gap_len} consecutive NaN gaps at index "
+                f"{gap_start}-{i-1} exceeds max_fill ({max_gap}) — left unfilled"
+            )
+            continue
+
+        # Fill forward from last known value
+        fill_value = None
+        if gap_start > 0 and series[gap_start - 1] is not None:
+            fill_value = series[gap_start - 1]
+        elif gap_start == 0:
+            # Leading Nones — try backward-fill from first non-None after the gap
+            j = i  # continue past this gap
+            while j < n and series[j] is None:
+                j += 1
+            if j < n and series[j] is not None:
+                fill_value = series[gap_start + 1]  # use next known value as approximation
+
+        for k in range(gap_start, gap_start + gap_len):
+            filled[k] = fill_value
+
+    return filled, warnings
+
+
+# --------------------------------------------------------------------------
 # High-level API
 # --------------------------------------------------------------------------
 
@@ -158,17 +224,28 @@ def _slope(series: list[Optional[float]], lookback: int) -> Optional[float]:
     return series[last_i] - series[prev_i]
 
 
-def compute(close: list[float], slope_lookback: int = 5) -> dict:
+def compute(close: list[float], slope_lookback: int = 5, max_fill_gap: int = 10) -> dict:
     """
-    Computes the entire stack and returns the latest values + recent slopes.
-    `slope_lookback`: bars to measure the slope (default 5 ~ one week).
-    """
-    if len(close) < 210:
-        # Not a fatal error: EMA200 will simply be None. We warn about it.
-        warn = f"Only {len(close)} bars; EMA200/some indicators may be None. Ideal >=220."
-    else:
-        warn = None
+    Computes the entire indicator stack and returns the latest values + recent slopes.
 
+    Args:
+        close: List of closing prices (oldest first).
+        slope_lookback: Bars to measure the EMA slope change (default 5 ~ one week).
+        max_fill_gap: Maximum consecutive NaN gaps to forward-fill in indicators
+                      (default 10 bars).  Longer gaps produce data quality warnings.
+
+    Returns:
+        Dict with indicator values and a ``data_quality_warnings`` list (may be empty).
+    """
+    n_bars = len(close)
+
+    # Warn about insufficient bars for EMA-200
+    if n_bars < 210:
+        warn_msg = f"Only {n_bars} bars; EMA200/some indicators may be None. Ideal >=220."
+    else:
+        warn_msg = None
+
+    # Compute all indicator series (may contain None for warmup)
     ema20 = ema_series(close, 20)
     ema50 = ema_series(close, 50)
     ema200 = ema_series(close, 200)
@@ -176,6 +253,14 @@ def compute(close: list[float], slope_lookback: int = 5) -> dict:
     macd_line, macd_sig, macd_hist = macd(close, 12, 26, 9)
     trix_line, trix_sig = trix(close, 15, 9)
     bb_mid, bb_up, bb_lo, pct_b = bollinger(close, 20, 2.0)
+
+    # Forward-fill NaN gaps in critical series (EMA slopes and TRIX are the most
+    # sensitive to missing data points).
+    fill_warnings: list[str] = []
+    ema20_ff, ff1 = forward_fill(ema20, max_gap=max_fill_gap)
+    ema50_ff, ff2 = forward_fill(ema50, max_gap=max_fill_gap)
+    trix_line_ff, ff3 = forward_fill(trix_line, max_gap=max_fill_gap)
+    fill_warnings.extend(ff1 + ff2 + ff3)
 
     def last(s):
         v = _strip(s)
@@ -195,18 +280,25 @@ def compute(close: list[float], slope_lookback: int = 5) -> dict:
             bars_since_below_ema20 = back
             break
 
+    # Merge warnings
+    all_warnings: list[str] = []
+    if warn_msg:
+        all_warnings.append(warn_msg)
+    all_warnings.extend(fill_warnings)
+
     return {
-        "n_bars": len(close),
-        "warning": warn,
+        "n_bars": n_bars,
+        "warning": ", ".join(all_warnings) if all_warnings else None,
+        "data_quality_warnings": fill_warnings,  # detailed list for logging/reporting
         "close": close[-1],
-        "ema20": last(ema20), "ema50": last(ema50), "ema200": last(ema200),
-        "ema20_slope": _slope(ema20, slope_lookback),
-        "ema50_slope": _slope(ema50, slope_lookback),
+        "ema20": last(ema20_ff), "ema50": last(ema50_ff), "ema200": last(ema200),
+        "ema20_slope": _slope(ema20_ff, slope_lookback),
+        "ema50_slope": _slope(ema50_ff, slope_lookback),
         "ema200_slope": _slope(ema200, slope_lookback),
         "rsi14": last(rsi), "rsi14_prev": prev(rsi),
         "macd_line": last(macd_line), "macd_signal": last(macd_sig),
         "macd_hist": last(macd_hist), "macd_hist_prev": prev(macd_hist),
-        "trix": last(trix_line), "trix_prev": prev(trix_line),
+        "trix": last(trix_line_ff), "trix_prev": prev(trix_line_ff),
         "trix_signal": last(trix_sig), "trix_signal_prev": prev(trix_sig),
         "bars_since_below_ema20": bars_since_below_ema20,
         "bb_mid": bb_mid, "bb_upper": bb_up, "bb_lower": bb_lo, "percent_b": pct_b,
@@ -234,7 +326,16 @@ def main() -> int:
         close = [round(100 + 18 * math.sin(i / 22) + i * 0.06, 2) for i in range(290)]
         print("[self-test: synthetic series of 290 bars]\n", file=sys.stderr)
 
-    print(json.dumps(_round(compute(close, args.slope_lookback)), indent=2, ensure_ascii=False))
+    result = compute(close, args.slope_lookback)
+    # Omit the detailed warnings list from JSON output (kept in-memory only).
+    out = {k: v for k, v in _round(result).items() if k != "data_quality_warnings"}
+    print(json.dumps(out, indent=2, ensure_ascii=False))
+
+    # Also emit any data quality warnings to stderr.
+    if result.get("data_quality_warnings"):
+        for w in result["data_quality_warnings"]:
+            print(f"[DATA-Q]: {w}", file=sys.stderr)
+
     return 0
 
 

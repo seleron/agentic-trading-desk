@@ -1,0 +1,6 @@
+# Agentic Trading Desk — Dependencies
+# pip install -r requirements.txt
+
+ccxt>=4.0.0        # Multi-exchange market data (BIST, crypto, etc.)
+pyyaml>=6.0        # Config file parsing (orchestrator)
+yfinance>=0.2.31   # Yahoo Finance fallback for BIST symbols not supported by ccxt
