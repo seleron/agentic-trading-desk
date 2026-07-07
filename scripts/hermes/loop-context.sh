@@ -37,6 +37,11 @@ if [ -n "$OPEN_BRANCHES" ]; then
             fi
         fi
         if [ -n "$fix_file" ] && [ -f "$fix_file" ]; then
+            # Skip resolved fix items
+            if grep -q "✅.*RESOLVED" "$fix_file" 2>/dev/null; then
+                continue
+            fi
+            
             # Fix items always get rank 0 (highest priority per spec)
             rank="0"
             title=$(grep -m 1 -i '^title:' "$fix_file" 2>/dev/null | sed 's/^title:\s*//' || echo "Fix PR #$pr_num")
@@ -46,7 +51,7 @@ if [ -n "$OPEN_BRANCHES" ]; then
     done
 fi
 
-# --- Tier 2: Ranked Feature Items ---
+# --- Tier 2: Ranked Feature Items (skip resolved) -----------------------------
 for f in "$BACKLOG_DIR"/*.md; do
     [ ! -f "$f" ] && continue
     base=$(basename "$f")
@@ -54,6 +59,11 @@ for f in "$BACKLOG_DIR"/*.md; do
     # Skip README and fix items (already in priority feed)
     [[ "$base" == "README.md" ]] && continue
     [[ "$base" == *-*fix-pr* ]] && continue
+    
+    # Skip resolved items — auto-resolved items get a Status section with RESOLVED
+    if grep -q "✅.*RESOLVED" "$f" 2>/dev/null; then
+        continue
+    fi
     
     rank=$(grep -m 1 -i '^rank:' "$f" 2>/dev/null | awk '{print $2}' || echo "999")
     title=$(grep -m 1 -i '^title:' "$f" 2>/dev/null | sed 's/^title:\s*//' || echo "$base")

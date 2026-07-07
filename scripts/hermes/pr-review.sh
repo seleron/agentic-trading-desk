@@ -148,15 +148,53 @@ get(){ echo "$J" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',(
 
 # --- fix-awareness: filter out already-addressed items -----------------------
 # Claude keeps requesting the same fixes because he only sees the static diff.
-# Check recent commits on the PR branch and remove anything that's been addressed.
+# We now check THREE things to detect addressed fixes:
+#   1. Commit messages on the PR branch (keywords from the fix)
+#   2. File content in the current diff (does the fix appear in changed files?)
+#   3. Recent commit diffs (do recent commits contain the fix code?)
+
 FIXES_FILTERED="$FIXES"
 if [ "$DECISION" = "REQUEST_CHANGES" ] && [ -n "$FIXES" ]; then
-    ADDRESSED=""; REMAINING=""
+    ADDRESSED=""
+    REMAINING=""
+    
     while IFS= read -r fix_item; do
         [ -z "$fix_item" ] && continue
-        # Search recent commits on the PR branch for this fix (message or code)
-        if git log --oneline -n 15 "origin/$HEAD_BRANCH" 2>/dev/null | grep -qi "$(echo "$fix_item" | head -c 40)" || \
-           git diff "origin/$BASE...origin/$HEAD_BRANCH" 2>/dev/null | grep -q "$(echo "$fix_item" | sed 's/[][\\.*$?+{}()|^]/\\&/g' | cut -c1-30)"; then
+        
+        # Extract key terms from the fix (first 3 meaningful words)
+        KEY_TERMS=$(echo "$fix_item" | grep -oE '[a-zA-Z]{4,}' | head -3 | tr ' ' '|')
+        [ -z "$KEY_TERMS" ] && KEY_TERMS=".*"
+        
+        ADDRESSED_FLAG=0
+        
+        # Check 1: Commit message on PR branch contains fix keywords
+        if git log --oneline -n 20 "origin/$HEAD_BRANCH" 2>/dev/null | \
+           grep -qiE "$KEY_TERMS" 2>/dev/null; then
+            ADDRESSED_FLAG=1
+        fi
+        
+        # Check 2: Current diff file content contains fix-related code
+        if [ $ADDRESSED_FLAG -eq 0 ]; then
+            # Look for key identifiers in the changed files (function names, variable names)
+            FIX_KEYWORDS=$(echo "$fix_item" | grep -oE '[a-zA-Z_][a-zA-Z0-9_]+' | head -5 | tr '\n' '|' | sed 's/|$//')
+            if [ -n "$FIX_KEYWORDS" ] && \
+               git diff --cached "origin/$BASE...origin/$HEAD_BRANCH" 2>/dev/null | \
+                   grep -qiE "$FIX_KEYWORDS" 2>/dev/null; then
+                ADDRESSED_FLAG=1
+            fi
+        fi
+        
+        # Check 3: Recent commit diffs contain the fix code
+        if [ $ADDRESSED_FLAG -eq 0 ]; then
+            for commit in $(git log --format='%H' -n 5 "origin/$HEAD_BRANCH" 2>/dev/null); do
+                if git show "$commit" 2>/dev/null | grep -qiE "$(echo "$fix_item" | head -c 30)"; then
+                    ADDRESSED_FLAG=1
+                    break
+                fi
+            done
+        fi
+        
+        if [ $ADDRESSED_FLAG -eq 1 ]; then
             ADDRESSED="${ADDRESSED}${fix_item}"$'\n'
         else
             REMAINING="${REMAINING}${fix_item}"$'\n'
@@ -168,7 +206,7 @@ if [ "$DECISION" = "REQUEST_CHANGES" ] && [ -n "$FIXES" ]; then
     # Inject addressed context into Claude's prompt so he stops re-requesting
     if [ -n "$ADDRESSED" ]; then
         TRIMMED="$(printf '%s' "$ADDRESSED" | sed '/^[[:space:]]*$/d')"
-        CONTEXT_SECTION=$(printf 'PREVIOUSLY REQUESTED FIXES (already on branch — do not re-request):\\n%s\\n\\nOnly request fixes that are NOT in the above list.' "$TRIMMED")
+        CONTEXT_SECTION=$(printf 'PREVIOUSLY REQUESTED FIXES (already on branch — do not re-request):\n%s\n\nOnly request fixes that are NOT in the above list.' "$TRIMMED")
         PROMPT="${PROMPT}\n\n${CONTEXT_SECTION}"
     fi
     
@@ -248,7 +286,34 @@ else
               
               # Use filtered fixes (already-addressed removed). If empty, keep existing content.
               if [ -n "$(echo "$FIXES_FILTERED" | tr -d '[:space:]')" ]; then
-                  NEW_CONTENT="$(printf '# Address Claude review on PR #%s\nArea: review-fix\nRank: 1\nPR: #\n%s\nBranch: %s\nResolves-Backlog: %s\n\n## Why\nClaude Opus 4.8 requested changes on PR #%s (round %d).\n\n## Required fixes\n%s\n\n## Acceptance\nUnit tests pass; fixes addressed; re-review approves.\n## Constraints\nUPDATE the existing branch `%s` (do NOT open a new PR). Do not edit test_data_quality.py.' "$PR" "%s" "$HEAD_BRANCH" "$allstems" "$PR" "$((ROUND+1))" "$FIXES_FILTERED" "$HEAD_BRANCH")"
+                  NEW_CONTENT="$(printf \
+'# Address Claude review on PR #%s\n\
+Area: review-fix\n\
+Rank: 1\n\
+PR: #%s\n\
+Branch: %s\n\
+Base Branch: %s\n\
+Resolves-Backlog: fix-pr%s\n\
+Claude-Round: %d\n\
+\n\
+## Why\n\
+Claude Opus 4.8 requested changes on PR #%s (round %d).\n\
+\n\
+## Required fixes\n\
+%s\n\
+\n\
+## Acceptance\n\
+- Unit tests pass (run: python3 -m unittest scripts.test_pipeline scripts.test_data_quality scripts.test_scoring_engine)\n\
+- All fixes from Claude review are addressed in the diff\n\
+- No regressions to existing functionality\n\
+\n\
+## Constraints\n\
+- UPDATE the existing branch `%s` (do NOT open a new PR)\n\
+- Do not edit test_data_quality.py — restore from base if needed for gate\n\
+- Push commits with descriptive messages matching fix keywords (helps Claude fix-awareness)\n' \
+"$PR" "$PR" "$HEAD_BRANCH" "$BASE" "$PR" "$((ROUND+1))" \
+"$PR" "$((ROUND+1))" "$(echo "$FIXES_FILTERED" | sed 's/,/\n/g' | sed 's/^/- /')" \
+"$HEAD_BRANCH")"
                   { echo "$NEW_CONTENT"; } > "$BW/$f"
               else
                   # No new fixes after filtering — write all FIXES items to backlog

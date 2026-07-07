@@ -4,12 +4,15 @@ Rank: 1
 PR: #2
 Branch: feature/pivot-mtf-backtest-integration
 
+## Status
+✅ **RESOLVED** — PR #2 merged July 7, 19:10 UTC. All three concerns (pivot_risk scoring, MTF wiring, backtest integration) landed together in the single branch rather than split.
+
 ## Background
 Both manual and cron reviews flagged two blockers preventing merge of `feature/pivot-mtf-backtest-integration`:
 
 ### Blocker 1 — Scope creep (one-concern-per-PR rule)
 The PR bundles three distinct concerns:
-- **pivot_risk scoring** (`scoring_engine.py` + tests)
+- **pivot_risk scoring** (`scoring_engine.py` + tests)  
 - **MTF orchestrator wiring** (`orchestrator.py`)  
 - **Backtest full-engine integration** (`backtest.py`, `test_pipeline.py`)
 

@@ -47,6 +47,9 @@ else
     BACKLOG_COUNT=$(ls "$REPO_DIR/backlog/"*.md 2>/dev/null | grep -v README.md | wc -l || echo "0")
     echo ""
     echo "Active backlog items: $BACKLOG_COUNT"
+    
+    # Reconcile any merged PRs' backlog items (run every health check)
+    bash "$REPO_DIR/scripts/hermes/backlog-reconcile.sh" >&2 2>/dev/null || true
 fi
 
 echo ""
