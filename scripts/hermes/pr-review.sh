@@ -44,7 +44,7 @@ DIFF="$(git diff "origin/$BASE...origin/$HEAD_BRANCH")"
 # Owner (human) PR comments — so a NEEDS_HUMAN decision can be answered in a PR
 # comment and the next review run incorporates the answer. Exclude our own bot comments.
 OWNER_COMMENTS="$(gh pr view "$PR" --json comments \
-  --jq '[.comments[] | select((.body|test("[BOT] Claude review|Needs human|NEEDS HUMAN"))|not) | .body] | .[-3:] | join("\n---\n")' 2>/dev/null | head -c 4000 || true)"
+  --jq '[.comments[] | select((.body|test("\\[BOT\\] Claude review|Needs human|NEEDS HUMAN"))|not) | .body] | .[-3:] | join("\n---\n")' 2>/dev/null | head -c 4000 || true)"
 FILES="$(git diff --name-only "origin/$BASE...origin/$HEAD_BRANCH")"
 CHANGED_LINES="$(git diff --shortstat "origin/$BASE...origin/$HEAD_BRANCH" | grep -oE '[0-9]+ insertion|[0-9]+ deletion' | grep -oE '[0-9]+' | paste -sd+ | bc 2>/dev/null || echo 0)"
 
