@@ -19,7 +19,6 @@ import math
 import os
 import sys
 from datetime import date as date_type
-from datetime import datetime
 
 # Allow both `python3 scripts/orchestrator.py` (scripts/ on sys.path) and
 # `python3 -m scripts.orchestrator`: ensure this dir is importable as flat modules.
@@ -43,7 +42,7 @@ def load_config(config_path: str = "config.yaml") -> dict:
 
 
 def run_full_pipeline(config: dict, output_dir: str) -> dict:
-    """Run the full pipeline end-to-end (single pass)."""
+    """Run the full pipeline end-to-end."""
     os.makedirs(output_dir, exist_ok=True)
 
     # Step 1: Data Collection (via ccxt)
@@ -176,7 +175,7 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
     with open(os.path.join(output_dir, "scores.json"), "w") as f:
         json.dump(scores_output, f, indent=2)
 
-    # Step 3: Multi-timeframe verification — weekly trend confirmation for daily signals
+    # Step 4b: Multi-timeframe verification — weekly trend confirmation for daily signals
     print("[3/9] Running multi-timeframe analysis...")
     from multi_timeframe import compute_single_tf_score
 
@@ -202,7 +201,7 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
             "weekly_bullish": weekly_score.get("score", 0) >= 5,
         }
 
-    # Step 4: Selection (top picks + NO TRADE DAY)
+    # Save MTF results for pipeline output
     print("[4/9] Selecting top picks...")
     from scoring_engine import select_top_picks
     threshold = config.get("scoring", {}).get("threshold", 80)
@@ -259,16 +258,24 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
 
     # Step 7b: Backtesting for top picks — run historical walk-forward on selected symbols
     print("[9/9] Running backtests on historical data...")
-    from backtest import run_backtest as bt_run
+    from backtest import run_backtest as bt_run, BacktestResult
 
     backtest_results = []
 
     for pick in selection.get("top_picks", []):
         symbol = pick["symbol"]
         try:
-            hist_raw = fetch_bist_data(symbol, timeframe="1d", limit=450)
+            # Try ccxt first (same source as live pipeline), fall back to yfinance
+            hist_raw = None
+            try:
+                hist_raw = fetch_bist_data(symbol, timeframe="1d", limit=450)
+            except Exception:
+                pass  # ccxt fallback below
+
             if not hist_raw or len(hist_raw) < 200:
+                # Fallback to yfinance for BIST symbols (ccxt lacks many Turkish stocks)
                 import yfinance as _yf  # noqa: F811 — local to this block only
+
                 hist_yf = _yf.Ticker(symbol).history(period="5y")
                 if len(hist_yf) < 200:
                     print(f"  [WARN] Backtest: insufficient history for {symbol}", file=sys.stderr)
@@ -285,7 +292,7 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
                     })
             else:
                 bars = []
-                for bar in hist_raw[:350]:
+                for bar in hist_raw[:350]:  # cap at ~350 bars to keep runtime reasonable
                     bars.append({
                         "date": bar.get("date", ""),
                         "open": float(bar["open"]),
@@ -295,9 +302,15 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
                         "volume": int(bar.get("volume", 0)),
                     })
 
+            # Backtest pillar weights come from config (fall back to sensible
+            # defaults matching run_backtest's expected keys).
+            bt_weights = config.get("backtest", {}).get(
+                "pillar_weights",
+                {"trend": 0.4, "momentum": 0.3, "macro_sentiment": 0.3},
+            )
             result = bt_run(
                 bars=bars,
-                pillar_weights={"trend": 0.4, "momentum": 0.35, "macro_sentiment": 0.25},
+                pillar_weights=bt_weights,
                 capital=10000.0,
             )
 
@@ -319,9 +332,9 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
         "selection": selection,
         "trade_plans": trade_plans,
         "notifications_count": len(notifications),
+        "eod_report": eod_report if not eod_report.get("no_trades") else None,
         "mtf_verification": mtf_consensus,
         "backtest_results": backtest_results,
-        "eod_report": eod_report if not eod_report.get("no_trades") else None,
         "learning_ready": learning_result.get("ready", False),
     }
 
@@ -331,159 +344,11 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
     return pipeline_output
 
 
-def _decision_key(selection: dict) -> tuple:
-    """Build a hashable key from selection to detect decision changes."""
-    picks = sorted(
-        [(p["symbol"], p.get("score", 0), p.get("action", "")) for p in selection.get("top_picks", [])],
-        key=lambda x: x[0],
-    )
-    return (tuple(picks), selection.get("no_trade_day", False))
-
-
-def _should_alert(
-    prev_key: tuple | None,
-    curr_selection: dict,
-    prev_scores: list[dict] | None,
-    curr_scores_output: list[dict],
-    min_score_change: float,
-) -> bool:
-    """Return True if any meaningful change occurred since last tick."""
-    # If no previous state, always alert (first run of intraday session)
-    if prev_key is None:
-        return True
-
-    curr_key = _decision_key(curr_selection)
-    if curr_key != prev_key:
-        return True  # Decision changed (new pick, removed pick, score crossed threshold)
-
-    # Same decision — only alert if scores shifted significantly
-    if prev_scores and len(prev_scores) == len(curr_scores_output):
-        for prev_q, curr_q in zip(prev_scores, curr_scores_output):
-            diff = abs(curr_q.get("score", 0) - prev_q.get("score", 0))
-            if diff >= min_score_change:
-                return True
-    return False
-
-
-def _is_in_quiet_hours(config: dict) -> bool:
-    """Check current time against quiet hours config."""
-    now = datetime.now()
-    start_hour = config.get("telegram", {}).get("quiet_hours_start", 23)
-    end_hour = config.get("telegram", {}).get("quiet_hours_end", 6)
-    if start_hour <= end_hour:
-        # Normal range (e.g. 23-06)
-        return start_hour <= now.hour < end_hour
-    else:
-        # Wraps around midnight (e.g. 22-05)
-        return now.hour >= start_hour or now.hour < end_hour
-
-
-def run_intraday_loop(config: dict, output_dir: str) -> None:
-    """Run the pipeline in intraday mode — loops every N minutes until stopped."""
-    from datetime import datetime
-
-    intraday_cfg = config.get("intraday", {})
-    interval_minutes = max(15, min(240, intraday_cfg.get("interval_minutes", 60)))
-    max_ticks = intraday_cfg.get("max_ticks")
-    min_score_change = intraday_cfg.get("min_score_change", 10)
-
-    tick_count = 0
-    prev_key: tuple | None = None
-    prev_scores: list[dict] | None = None
-    running = True
-
-    def _signal_handler(signum, frame):
-        nonlocal running
-        print(f"\n[INTRADAY] Received signal {signum} — stopping loop.", file=sys.stderr)
-        running = False
-
-    import signal
-    signal.signal(signal.SIGTERM, _signal_handler)
-    signal.signal(signal.SIGINT, _signal_handler)
-
-    while running:
-        tick_count += 1
-        if max_ticks is not None and tick_count > max_ticks:
-            print(f"[INTRADAY] Max ticks ({max_ticks}) reached — stopping.", file=sys.stderr)
-            break
-
-        # Check quiet hours (skip run but don't exit loop)
-        if _is_in_quiet_hours(config):
-            print(
-                f"  [INTRADAY tick {tick_count}] Quiet hours — skipping scan",
-                file=sys.stderr,
-            )
-        else:
-            print(f"\n[INTRADAY] Tick #{tick_count} ({datetime.now().isoformat()})")
-
-        # Run pipeline (always runs; notification/alert only if changed)
-        result = run_full_pipeline(config, output_dir)
-
-        if "error" in result:
-            print(f"  [WARN] Pipeline error: {result['error']}", file=sys.stderr)
-
-        # Extract scores for comparison on next tick
-        curr_scores_output = []
-        curr_selection = {}
-        try:
-            with open(os.path.join(output_dir, "scores.json")) as f:
-                import json as _json
-                all_scores = _json.load(f)
-                if isinstance(all_scores, list):
-                    curr_scores_output = all_scores
-                elif isinstance(all_scores, dict):
-                    curr_scores_output = [all_scores]
-        except Exception:
-            pass
-
-        try:
-            with open(os.path.join(output_dir, "selection.json")) as f:
-                import json as _json
-                curr_selection = _json.load(f)
-        except Exception:
-            pass
-
-        # Decide whether to send alert
-        if not _is_in_quiet_hours(config):
-            should_alert = _should_alert(
-                prev_key, curr_selection, prev_scores, curr_scores_output, min_score_change
-            )
-            if should_alert:
-                print(f"  [INTRADAY tick {tick_count}] Decision changed — alerting", file=sys.stderr)
-                # Re-route notifications (they use latest files on disk already from run_full_pipeline)
-                from notification_router import route_notifications
-                notifications = route_notifications(curr_scores_output, curr_selection)
-            else:
-                print(
-                    f"  [INTRADAY tick {tick_count}] No change — skipping alert",
-                    file=sys.stderr,
-                )
-
-        prev_key = _decision_key(curr_selection) if curr_selection else None
-        prev_scores = list(curr_scores_output) if curr_scores_output else None
-
-        # Sleep for the interval (interruptible via signal)
-        sleep_seconds = interval_minutes * 60
-        import time as _time
-        end_time = _time.time() + sleep_seconds
-        while running and _time.time() < end_time:
-            remaining = end_time - _time.time()
-            if remaining <= 0:
-                break
-            _time.sleep(min(remaining, 5))  # Check signal every 5s
-
-    print(f"[INTRADAY] Loop ended after {tick_count} ticks.", file=sys.stderr)
-
-
 def main() -> int:
     ap = argparse.ArgumentParser(description="BIST AI Trader v1.0 — Full Pipeline Orchestrator.")
     ap.add_argument("--config", "-c", default="config.yaml", help="Config file path")
     ap.add_argument("--output-dir", "-o", default="./outputs/", help="Output directory for results")
     ap.add_argument("--symbols", nargs="+", default=None, help="Override symbols from config")
-    ap.add_argument(
-        "--intraday", action="store_true", default=False,
-        help="Run in intraday mode — re-scan every N minutes instead of single pass.",
-    )
     args = ap.parse_args()
 
     try:
@@ -495,33 +360,24 @@ def main() -> int:
     if args.symbols:
         config.setdefault("data", {})["symbols"] = args.symbols
 
-    # Determine intraday mode: CLI flag overrides config, config overrides default
-    intraday_enabled = args.intraday or config.get("intraday", {}).get("enabled", False)
+    result = run_full_pipeline(config, args.output_dir)
 
-    if not intraday_enabled:
-        result = run_full_pipeline(config, args.output_dir)
-
-        # Print summary
-        print("\n" + "=" * 60, file=sys.stderr)
-        print(f"[PIPELINE COMPLETE] {date_type.today().isoformat()}", file=sys.stderr)
-        if "error" in result:
-            print(f"  ERROR: {result['error']}", file=sys.stderr)
-        else:
-            selection = result.get("selection", {})
-            print(f"  Symbols scanned: {result['symbols_scanned']}", file=sys.stderr)
-            print(f"  Market bias:     {selection.get('market_bias', 'N/A')}", file=sys.stderr)
-            print(f"  Top picks:       {len(selection.get('top_picks', []))}", file=sys.stderr)
-            for pick in selection.get("top_picks", []):
-                print(f"    → {pick['symbol']} (score={pick['score']})", file=sys.stderr)
-            if selection.get("no_trade_day"):
-                print("  ** NO TRADE DAY **", file=sys.stderr)
-            print("=" * 60, file=sys.stderr)
-
-        return 0
-
-    # Intraday mode — runs until interrupted or max ticks reached
-    run_intraday_loop(config, args.output_dir)
+    # Print summary
+    print("\n" + "=" * 60, file=sys.stderr)
     print(f"[PIPELINE COMPLETE] {date_type.today().isoformat()}", file=sys.stderr)
+    if "error" in result:
+        print(f"  ERROR: {result['error']}", file=sys.stderr)
+    else:
+        selection = result.get("selection", {})
+        print(f"  Symbols scanned: {result['symbols_scanned']}", file=sys.stderr)
+        print(f"  Market bias:     {selection.get('market_bias', 'N/A')}", file=sys.stderr)
+        print(f"  Top picks:       {len(selection.get('top_picks', []))}", file=sys.stderr)
+        for pick in selection.get("top_picks", []):
+            print(f"    → {pick['symbol']} (score={pick['score']})", file=sys.stderr)
+        if selection.get("no_trade_day"):
+            print("  ** NO TRADE DAY **", file=sys.stderr)
+        print("=" * 60, file=sys.stderr)
+
     return 0
 
 

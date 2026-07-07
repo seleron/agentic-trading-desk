@@ -26,7 +26,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import backtest
-from backtest import BacktestResult
 import eod_module
 import learning_module
 from scoring_engine import (
@@ -136,14 +135,12 @@ class TestBacktest(unittest.TestCase):
                          "low": p * 0.98, "close": p, "volume": 1_000_000})
         return bars
 
-    def test_run_backtest_default_score_mode(self):
-        # Without pillar_weights, backtest falls through to full 7-component scoring_engine mode.
-        result = backtest.run_backtest(
-            bars=self._bars(),
-        )
-        self.assertIsInstance(result, BacktestResult)
+    def test_run_backtest_requires_pillar_weights(self):
+        # Guards the orchestrator integration bug (call without weights).
+        with self.assertRaises(TypeError):
+            backtest.run_backtest(bars=self._bars())  # type: ignore[call-arg]
 
-    def test_run_backtest_with_pillar_weights(self):
+    def test_run_backtest_produces_result(self):
         r = backtest.run_backtest(
             bars=self._bars(),
             pillar_weights={"trend": 0.4, "momentum": 0.3, "macro_sentiment": 0.3},
@@ -181,127 +178,6 @@ class TestEodAndLearning(unittest.TestCase):
         self.assertTrue(result["ready"])
         self.assertEqual(result["trades_analyzed"], 6)
         self.assertGreaterEqual(result["avg_win_score"], 0)
-
-
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
-
-
-class TestIntradayHelpers(unittest.TestCase):
-    """Tests for intraday scanner helpers in orchestrator.py."""
-
-    def test_decision_key_empty(self):
-        from orchestrator import _decision_key
-        key = _decision_key({"top_picks": [], "no_trade_day": True})
-        self.assertEqual(key, ((), True))
-
-    def test_decision_key_with_picks(self):
-        from orchestrator import _decision_key
-        sel = {"top_picks": [{"symbol": "BBB", "score": 85}, {"symbol": "AAA", "score": 90}]}
-        key = _decision_key(sel)
-        # Should be sorted by symbol name — key[0] is the tuple of picks
-        self.assertEqual(key[0][0], ("AAA", 90, ""))
-        self.assertEqual(key[0][1], ("BBB", 85, ""))
-
-    def test_should_alert_first_run(self):
-        from orchestrator import _should_alert
-        sel = {"top_picks": [{"symbol": "X"}]}
-        scores = [{"score": 80}]
-        self.assertTrue(_should_alert(None, sel, None, scores, 10))
-
-    def test_should_alert_decision_changed(self):
-        from orchestrator import _decision_key, _should_alert
-        prev_sel = {"top_picks": [], "no_trade_day": True}
-        curr_sel = {"top_picks": [{"symbol": "X", "score": 85}], "no_trade_day": False}
-        scores = [{"score": 80}]
-        self.assertTrue(
-            _should_alert(_decision_key(prev_sel), curr_sel, None, scores, 10)
-        )
-
-    def test_should_alert_score_shift(self):
-        from orchestrator import _decision_key, _should_alert
-        sel = {"top_picks": [{"symbol": "X", "score": 85}]}
-        prev_scores = [{"score": 70}]
-        curr_scores = [{"score": 85}]  # +15 shift >= min_score_change=10
-        self.assertTrue(
-            _should_alert(_decision_key(sel), sel, prev_scores, curr_scores, 10)
-        )
-
-    def test_should_not_alert_no_change(self):
-        from orchestrator import _decision_key, _should_alert
-        sel = {"top_picks": [{"symbol": "X", "score": 85}]}
-        scores = [{"score": 85}]
-        self.assertFalse(
-            _should_alert(_decision_key(sel), sel, scores, scores, 10)
-        )
-
-    def test_should_not_alert_small_shift(self):
-        from orchestrator import _decision_key, _should_alert
-        sel = {"top_picks": [{"symbol": "X", "score": 85}]}
-        prev_scores = [{"score": 76}]
-        curr_scores = [{"score": 80}]  # +4 shift < min_score_change=10
-        self.assertFalse(
-            _should_alert(_decision_key(sel), sel, prev_scores, curr_scores, 10)
-        )
-
-    def test_quiet_hours_normal_range(self):
-        from unittest.mock import patch
-        from orchestrator import _is_in_quiet_hours
-        # Simulate hour 23 (within 23-6 range)
-        cfg = {"telegram": {"quiet_hours_start": 23, "quiet_hours_end": 6}}
-        with patch("orchestrator.datetime") as mock_dt:
-            mock_dt.now.return_value.hour = 23
-            self.assertTrue(_is_in_quiet_hours(cfg))
-
-    def test_quiet_hours_outside_range(self):
-        from unittest.mock import patch
-        from orchestrator import _is_in_quiet_hours
-        # Simulate hour 10 (outside 23-6 range)
-        cfg = {"telegram": {"quiet_hours_start": 23, "quiet_hours_end": 6}}
-        with patch("orchestrator.datetime") as mock_dt:
-            mock_dt.now.return_value.hour = 10
-            self.assertFalse(_is_in_quiet_hours(cfg))
-
-    def test_interval_clamping(self):
-        """Interval should clamp to [15, 240] minutes."""
-        # Test via config values — we check the function reads them correctly
-        cfg = {"intraday": {"interval_minutes": 5}}  # below min
-        interval = max(15, min(240, cfg["intraday"].get("interval_minutes", 60)))
-        self.assertEqual(interval, 15)
-
-        cfg2 = {"intraday": {"interval_minutes": 300}}  # above max
-        interval2 = max(15, min(240, cfg2["intraday"].get("interval_minutes", 60)))
-        self.assertEqual(interval2, 240)
-
-    def test_max_ticks_limit(self):
-        """Max ticks should stop the loop."""
-        # We verify by checking that tick_count > max_ticks breaks
-        max_ticks = 3
-        tick_count = 0
-        while True:
-            tick_count += 1
-            if max_ticks is not None and tick_count > max_ticks:
-                break
-        self.assertEqual(tick_count, max_ticks + 1)
-
-    def test_no_trade_day_key_differs(self):
-        """no_trade_day=True vs False should produce different keys."""
-        from orchestrator import _decision_key
-        key_ntd = _decision_key({"top_picks": [], "no_trade_day": True})
-        key_trades = _decision_key({"top_picks": [], "no_trade_day": False})
-        self.assertNotEqual(key_ntd, key_trades)
-
-
-class TestIntradayConfig(unittest.TestCase):
-    """Verify intraday config schema is present."""
-
-    def test_config_has_intraday_section(self):
-        import yaml
-        with open("config.yaml") as f:
-            cfg = yaml.safe_load(f)
-        self.assertIn("intraday", cfg)
-        self.assertEqual(cfg["intraday"]["enabled"], False)
-        self.assertEqual(cfg["intraday"]["interval_minutes"], 60)
 
 
 if __name__ == "__main__":

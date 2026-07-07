@@ -27,10 +27,10 @@ for line in "${PRS[@]}"; do
   # so key the dedup off the latest comment timestamp instead).
   KEY="$NUM:$SHA"
   LAST_REVIEW="$(gh pr view "$NUM" --json comments \
-    --jq '[.comments[] | select(.body|test("\\[BOT\\] Claude review"))] | last | .body' 2>/dev/null || true)"
+    --jq '[.comments[] | select(.body|test("🤖 Claude review"))] | last | .body' 2>/dev/null || true)"
   if printf '%s' "$LAST_REVIEW" | grep -q 'NEEDS_HUMAN'; then
     ANSWER_AT="$(gh pr view "$NUM" --json comments \
-      --jq '[.comments[] | select((.body|test("\\[BOT\\] Claude review|Needs human|NEEDS HUMAN"))|not) | .createdAt]' 2>/dev/null || true)"
+      --jq '[.comments[] | select((.body|test("🤖 Claude review|Needs human|NEEDS HUMAN"))|not) | .createdAt]' 2>/dev/null || true)"
     [ -n "$ANSWER_AT" ] && KEY="$NUM:answer:$ANSWER_AT"
   fi
 
