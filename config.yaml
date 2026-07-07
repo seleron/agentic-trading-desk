@@ -100,6 +100,12 @@ learning:
   min_trades_for_analysis: 50
   auto_adjust_weights: true
 
+intraday:
+  enabled: false
+  interval_minutes: 60
+  max_ticks: null  # None = unlimited; e.g. 48 ≈ 12h at 15-min intervals
+  min_score_change: 10  # Only alert when score changes by this much or decision flips
+
 telegram:
   api_token: ""
   chat_id: ""

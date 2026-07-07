@@ -149,14 +149,15 @@ class TestRouteNotifications(unittest.TestCase):
         selection = {}
         telegram_cfg = {"api_token": "fake:token", "chat_id": "123456"}
 
-        with patch("notification_router._send_telegram_message") as mock_send:
-            mock_send.return_value = True
-            notifs = route_notifications(
-                scores, selection,
-                telegram_config=telegram_cfg,
-                trade_plans=[{"symbol": "EREGL", "entry_price": 45.0}],
-            )
-            mock_send.assert_called_once()
+        with patch("notification_router._is_in_quiet_hours", return_value=False):
+            with patch("notification_router._send_telegram_message") as mock_send:
+                mock_send.return_value = True
+                notifs = route_notifications(
+                    scores, selection,
+                    telegram_config=telegram_cfg,
+                    trade_plans=[{"symbol": "EREGL", "entry_price": 45.0}],
+                )
+                mock_send.assert_called_once()
 
     def test_quiet_hours_skips_telegram(self):
         scores = [{"score": 92, "symbol": "EREGL", "rationale": []}]
