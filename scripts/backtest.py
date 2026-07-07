@@ -20,7 +20,6 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import os
 import sys
 from dataclasses import dataclass, asdict
 from typing import Optional
@@ -119,7 +118,7 @@ def calculate_max_drawdown(equity_curve: list[float]) -> tuple[float, int, int]:
 
 def run_backtest(
     bars: list[dict],
-    pillar_weights: Optional[dict] = None,
+    pillar_weights: dict,
     capital: float = 10000.0,
     commission_pct: float = 0.001,
     slippage_pct: float = 0.0005,
@@ -129,10 +128,9 @@ def run_backtest(
 
     Args:
         bars: List of dicts with 'date', 'open', 'high', 'low', 'close', 'volume'
-        pillar_weights: Legacy dict for simplified pillar scoring (optional).
-            When None, uses full 7-component scoring_engine + indicators.
+        pillar_weights: Dict with 'trend', 'momentum', 'macro_sentiment' keys
         capital: Starting capital
-        commission_pct: Commission per trade as fraction (0.1% = 0.001)
+        commission_pct: Commission per trade as fraction (0.1%% = 0.001)
         slippage_pct: Slippage per trade as fraction
 
     Returns:
@@ -141,16 +139,11 @@ def run_backtest(
     if not bars or len(bars) < 50:
         raise ValueError("Need at least 50 bars for backtesting")
 
-    # Composite entry/exit gates on the [-1, +1] scale.
-    # The full-engine (score-remapped) path uses SPLIT thresholds so entry corresponds to
-    # score >= 48 and exit to score <= 26. A single symmetric gate on the remapped composite
-    # silently raised the entry bar to score >= 74. Legacy pillar mode and the ROC fallback
-    # keep their original symmetric ±0.48 gate (their composites are not score remaps).
-    SYMMETRIC_ENTRY, SYMMETRIC_EXIT = 0.48, -0.48
-    # Gates placed on half-integer score boundaries (73.5, 26.5) so integer scores map
-    # unambiguously: enter at score >= 74, exit at score <= 26. (composite = (score/100)*2 - 1)
-    # Aligns backtest entry with orchestrator's live pick threshold (~80), while leaving headroom.
-    SCORE_ENTRY, SCORE_EXIT = 0.47, -0.47
+    # Entry/exit thresholds. Per-bar scores are in {-1, +1} and pillar weights
+    # sum to ~1.0, so composite lives in roughly [-1, +1]. Thresholds must sit
+    # inside that range or no trade ever fires (macro_score is neutral here, so
+    # the reachable max is trend_weight + momentum_weight < 1.0).
+    ENTRY_THRESHOLD = 0.5
 
     # Initialize state
     equity = capital
@@ -174,42 +167,41 @@ def run_backtest(
         prev_bar = bars[i - 1]
         price = bar["close"]
 
-        # Calculate composite score — dual mode: full 7-component engine or legacy pillars
-        recent_closes = [bars[j]["close"] for j in range(max(0, i - 250), i)] if i >= 20 else []
+        # Calculate composite score from pillar weights (simplified)
+        if i >= 20:
+            recent_closes = [bars[j]["close"] for j in range(max(0, i - 20), i)]
+            sma_short = sum(recent_closes[-10:]) / min(10, len(recent_closes))
+            sma_long = sum(recent_closes) / len(recent_closes)
 
-        if pillar_weights is not None:
-            # Legacy pillar-based scoring (simple)
-            short_hist = [c for c in recent_closes[-10:] if c]  # last 10 valid closes
-            long_hist = [c for c in recent_closes if c]          # full history
-            sma_short = sum(short_hist) / max(1, len(short_hist))
-            sma_long = sum(long_hist) / max(1, len(long_hist))
-            roc = (price - recent_closes[0]) / recent_closes[0] if recent_closes and recent_closes[0] != 0 else 0
+            # Simplified momentum (ROC over last 5 bars)
+            roc = (price - recent_closes[0]) / recent_closes[0] if recent_closes[0] != 0 else 0
 
             trend_score = 1.0 if sma_short > sma_long else -1.0
             mom_score = 1.0 if roc > 0 else -1.0
-            macro_score = 0
+            macro_score = 0  # Simplified: neutral macro for backtest
 
+            # Accept both "macro_sentiment" and the CLI's "macro" alias.
             w_trend = pillar_weights.get("trend", 0.4)
             w_mom = pillar_weights.get("momentum", 0.35)
             w_macro = pillar_weights.get("macro_sentiment", pillar_weights.get("macro", 0.25))
 
-            composite = (w_trend * trend_score + w_mom * mom_score + w_macro * macro_score)
-            entry_threshold, exit_threshold = SYMMETRIC_ENTRY, SYMMETRIC_EXIT
+            composite = (
+                w_trend * trend_score +
+                w_mom * mom_score +
+                w_macro * macro_score
+            )
         else:
             # Full 7-component scoring via indicators + scoring_engine — standalone mode
             try:
+                import os as _os
                 import sys as _sys
-                _p = os.path.dirname(os.path.abspath(__file__))
+                _p = _os.path.dirname(_os.path.abspath(__file__))
                 if _p not in _sys.path:
                     _sys.path.insert(0, _p)
                 from indicators import compute as ind_compute  # noqa: F811
-                from scoring_engine import (  # noqa: F811
-                    score_quote, compute_trend_score,
-                    compute_momentum_score, compute_volume_score,
-                    compute_ema_structure_score, compute_pivot_score,
-                    compute_volatility_score, compute_technical_summary_score,
-                )
+                from scoring_engine import score_quote  # noqa: F811
 
+                recent_closes = [bars[j]["close"] for j in range(max(0, i - 20), i)]
                 closes_hist = [bars[j]["close"] for j in range(max(0, i - 250), i)]
                 ind = ind_compute(closes_hist) if len(closes_hist) >= 20 else {}
 
@@ -234,26 +226,23 @@ def run_backtest(
                 }
 
                 scored = score_quote(quote)
-                # Remap [0,100] → [-1,+1]: (score/100)*2 - 1
-                composite = (scored.get("score", 50.0) / 100.0) * 2.0 - 1.0
-                entry_threshold, exit_threshold = SCORE_ENTRY, SCORE_EXIT
+                composite = scored.get("score", 0.48) / 100.0  # normalize to ~[0, 1] range
 
             except Exception:
                 # Fallback: simple ROC-based heuristic if scoring imports fail
                 roc = (price - recent_closes[0]) / recent_closes[0] if recent_closes and recent_closes[0] != 0 else 0
                 composite = max(-1.0, min(1.0, roc * 5))
-                entry_threshold, exit_threshold = SYMMETRIC_ENTRY, SYMMETRIC_EXIT
 
-        # Entry signal: composite score crosses above the (mode-specific) entry gate
-        if not in_position and composite >= entry_threshold:
+        # Entry signal: composite score crosses above threshold
+        if not in_position and composite >= ENTRY_THRESHOLD:
             entry_fill_price = price * (1 + slippage_pct)  # pay slippage on entry
             position_size = equity * 0.95 / entry_fill_price
             equity -= position_size * entry_fill_price * commission_pct  # Commission on entry
             in_position = True
             trade_log.append({"type": "entry", "price": round(entry_fill_price, 6), "index": i})
 
-        # Exit signal: composite drops below the (mode-specific) exit gate OR 2% stop below entry fill
-        elif in_position and (composite <= exit_threshold or price < entry_fill_price * 0.98):
+        # Exit signal: composite drops below threshold OR 2% stop below entry fill
+        elif in_position and (composite <= -ENTRY_THRESHOLD or price < entry_fill_price * 0.98):
             exit_price = price * (1 - slippage_pct)
             proceeds = position_size * exit_price
             equity += proceeds - proceeds * commission_pct  # Commission on exit
