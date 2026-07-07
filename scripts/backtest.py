@@ -147,9 +147,10 @@ def run_backtest(
     # silently raised the entry bar to score >= 74. Legacy pillar mode and the ROC fallback
     # keep their original symmetric ±0.48 gate (their composites are not score remaps).
     SYMMETRIC_ENTRY, SYMMETRIC_EXIT = 0.48, -0.48
-    # Gates placed on half-integer score boundaries (47.5, 26.5) so integer scores map
-    # unambiguously: enter at score >= 48, exit at score <= 26. (composite = (score/100)*2 - 1)
-    SCORE_ENTRY, SCORE_EXIT = -0.05, -0.47
+    # Gates placed on half-integer score boundaries (73.5, 26.5) so integer scores map
+    # unambiguously: enter at score >= 74, exit at score <= 26. (composite = (score/100)*2 - 1)
+    # Aligns backtest entry with orchestrator's live pick threshold (~80), while leaving headroom.
+    SCORE_ENTRY, SCORE_EXIT = 0.47, -0.47
 
     # Initialize state
     equity = capital
