@@ -44,7 +44,7 @@ DIFF="$(git diff "origin/$BASE...origin/$HEAD_BRANCH")"
 # Owner (human) PR comments — so a NEEDS_HUMAN decision can be answered in a PR
 # comment and the next review run incorporates the answer. Exclude our own bot comments.
 OWNER_COMMENTS="$(gh pr view "$PR" --json comments \
-  --jq '[.comments[] | select((.body|test("🤖 Claude review|Needs human|NEEDS HUMAN"))|not) | .body] | .[-3:] | join("\n---\n")' 2>/dev/null | head -c 4000 || true)"
+  --jq '[.comments[] | select((.body|test("[BOT] Claude review|Needs human|NEEDS HUMAN"))|not) | .body] | .[-3:] | join("\n---\n")' 2>/dev/null | head -c 4000 || true)"
 FILES="$(git diff --name-only "origin/$BASE...origin/$HEAD_BRANCH")"
 CHANGED_LINES="$(git diff --shortstat "origin/$BASE...origin/$HEAD_BRANCH" | grep -oE '[0-9]+ insertion|[0-9]+ deletion' | grep -oE '[0-9]+' | paste -sd+ | bc 2>/dev/null || echo 0)"
 
@@ -157,11 +157,11 @@ if [ "$DECISION" = "REQUEST_CHANGES" ] && [ -n "$FIXES" ]; then
         # Search recent commits on the PR branch for this fix (message or code)
         if git log --oneline -n 15 "origin/$HEAD_BRANCH" 2>/dev/null | grep -qi "$(echo "$fix_item" | head -c 40)" || \
            git diff "origin/$BASE...origin/$HEAD_BRANCH" 2>/dev/null | grep -q "$(echo "$fix_item" | sed 's/[][\\.*$?+{}()|^]/\\&/g' | cut -c1-30)"; then
-            ADDRESSED="${ADDRESSED}✅ ${fix_item}"$'\n'
+            ADDRESSED="${ADDRESSED}${fix_item}"$'\n'
         else
             REMAINING="${REMAINING}${fix_item}"$'\n'
         fi
-    done < <(echo "$FIXES" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{const j=JSON.parse(d);j.forEach(f=>console.log(f))}")
+    done < <(python3 -c "import json,sys; fixes=json.loads(sys.argv[1]); [print(f) for f in fixes]" "$FIXES" 2>/dev/null || echo "$FIXES" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{const j=JSON.parse(d);j.forEach(f=>console.log(f))}")
     
     FIXES_FILTERED="$(echo "$REMAINING" | sed '/^$/d' | paste -sd',' 2>/dev/null || true)"
     
@@ -186,7 +186,7 @@ else
   TAIL_SECTION="$( [ -n "$FIXES" ] && printf '### Required fixes\n%s' "$FIXES" )"
 fi
 
-REVIEW_BODY="$(printf '## 🤖 Claude Opus 4.8 review — %s (%s risk)\n\n%s\n\n**Independent gate:** %s · **changed lines:** %s · **sensitive files touched:** %s\n\n%s' \
+REVIEW_BODY="$(printf '## [BOT] Claude Opus 4.8 review — %s (%s risk)\n\n%s\n\n**Independent gate:** %s · **changed lines:** %s · **sensitive files touched:** %s\n\n%s' \
   "$DECISION" "$RISK" "$SUMMARY" "$GATE_RESULT" "$CHANGED_LINES" "${SENSITIVE_FILES:-none}" \
   "$( [ -n "$TAIL_SECTION" ] && printf '%s\n' "$TAIL_SECTION" )")"
 
@@ -212,7 +212,7 @@ elif [ "$DECISION" = "NEEDS_HUMAN" ]; then
     echo "🧑‍⚖️ PR #$PR needs a human decision — questions posted, auto-fix paused."
 else
     # REQUEST_CHANGES → file a high-Rank fix item that updates THIS branch.
-    ROUND=$(( $(gh pr view "$PR" --json comments --jq '[.comments[]|select(.body|contains("🤖 Claude review"))]|length' 2>/dev/null || echo 0) ))
+    ROUND=$(( $(gh pr view "$PR" --json comments --jq '[.comments[]|select(.body|contains("[BOT] Claude review"))]|length' 2>/dev/null || echo 0) ))
     MAX_ROUNDS=8
     
     if [ "$ROUND" -ge "$MAX_ROUNDS" ]; then
@@ -251,8 +251,15 @@ else
                   NEW_CONTENT="$(printf '# Address Claude review on PR #%s\nArea: review-fix\nRank: 1\nPR: #\n%s\nBranch: %s\nResolves-Backlog: %s\n\n## Why\nClaude Opus 4.8 requested changes on PR #%s (round %d).\n\n## Required fixes\n%s\n\n## Acceptance\nUnit tests pass; fixes addressed; re-review approves.\n## Constraints\nUPDATE the existing branch `%s` (do NOT open a new PR). Do not edit test_data_quality.py.' "$PR" "%s" "$HEAD_BRANCH" "$allstems" "$PR" "$((ROUND+1))" "$FIXES_FILTERED" "$HEAD_BRANCH")"
                   { echo "$NEW_CONTENT"; } > "$BW/$f"
               else
-                  # No new fixes after filtering — keep existing content (older rounds' items)
-                  log "No new fixes to file for PR #$PR; keeping existing backlog item as-is."
+                  # No new fixes after filtering — write all FIXES items to backlog
+                  # so the implementer can decide which ones are truly addressed vs still needed.
+                  { echo "# Address Claude review on PR #$PR (rounds 1–$ROUND)"; } > "$BW/$f"
+                  if [ -n "$(echo "$FIXES" | tr -d '[:space:]')" ]; then
+                      echo "" >> "$BW/$f"
+                      echo "## Required fixes:" >> "$BW/$f"
+                      printf '%s' "$FIXES" | python3 -c "import json,sys; [print(f'- {f}') for f in json.loads(sys.stdin.read())]" 2>/dev/null || \
+                      printf '%s' "$FIXES" | sed 's/.*\[//;s/\].*//' | tr ',' '\n' | sed 's/^ *[-"]*//;s/"$//' | while IFS= read -r line; do [ -n "$line" ] && echo "- $line"; done >> "$BW/$f"
+                  fi
               fi
               
               if ( cd "$BW" && git add "$f" \

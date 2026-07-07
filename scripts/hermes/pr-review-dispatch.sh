@@ -19,7 +19,7 @@ else HSEND=("$HOME/.hermes/hermes-agent/venv/bin/python" -m hermes_cli.main send
 
 OUT="$(bash "$ROOT/scripts/hermes/pr-review.sh" "$PR" 2>"$LOG" | tail -1)"
 if [ -n "${HERMES_DELIVER:-}" ]; then
-  "${HSEND[@]}" -t "$HERMES_DELIVER" "🤖 PR #$PR review — ${OUT:-see PR comment}" >/dev/null 2>&1 || true
+  "${HSEND[@]}" -t "$HERMES_DELIVER" "PR #$PR review — ${OUT:-see PR comment}" >/dev/null 2>&1 || true
 else
   echo "⚠️ no delivery target (set HERMES_DELIVER in scripts/hermes/loop.env)" >&2
 fi
