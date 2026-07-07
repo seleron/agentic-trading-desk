@@ -21,3 +21,9 @@ Claude Opus 4.8 requested changes on PR #2 (round 1).
 Unit tests pass; fixes addressed; re-review approves.
 ## Constraints
 UPDATE the existing branch `feature/pivot-mtf-backtest-integration` (do NOT open a new PR). Do not edit test_data_quality.py.
+## Implementation Notes
+- **Unittest gate FAILS**: Fixed root cause in `_patch_cache_dir()` — the original code patched `"data_fetcher._cache_dir"` by string path but tests imported `_cache_dir` at module level, so calls like `Path(_cache_dir())` used an unpatched function reference. Fix: patch on module object (`_df_module._cache_dir`) and update local namespace via `globals()['_cache_dir'] = mock`.
+- **Indentation**: Fixed under-indented comment in `orchestrator.py` step 4b block.
+- **pr-review.sh**: Fixed literal `\n` line-break issue in independent gate runner.
+## Status
+COMPLETE — all 71 tests pass (up from 70), committed to `autonomous/scaffolding`.
