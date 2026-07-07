@@ -70,8 +70,7 @@ git worktree remove --force "$WT" >/dev/null 2>&1 || true; [ -d "$WT" ] && rm -r
 git worktree add --detach "$WT" "origin/$HEAD_BRANCH" >/dev/null 2>&1
 
 # Restore base's test files so a PR can't weaken tests to pass
-if git -C "$WT" checkout "origin/$BASE" -- scripts/test_data_quality.py 2>/
-v/null; then
+if git -C "$WT" checkout "origin/$BASE" -- scripts/test_data_quality.py 2>/dev/null; then
     log "Running independent gate (all unittests)…"
     GATE_LOG="$(cd "$WT" && timeout 300 python3 -m unittest scripts.test_pipeline scripts.test_data_quality scripts.test_scoring_engine 2>&1)" || true
     if echo "$GATE_LOG" | grep -qE '^Ran [0-9]+ test.*OK$'; then
@@ -145,7 +144,7 @@ log "Asking Claude Opus 4.8 to review…"
 RAW="$(claude -p "$PROMPT" --model claude-opus-4-8 2>/dev/null)"
 J="$(echo "$RAW" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{process.stdout.write(JSON.stringify(JSON.parse(d)))}catch{const a=d.indexOf("{"),b=d.lastIndexOf("}");try{process.stdout.write(JSON.stringify(JSON.parse(d.slice(a,b+1))))}catch{process.stdout.write("")}}})')"
 [ -z "$J" ] && { log "could not parse Claude review JSON:"; log "$RAW"; exit 1; }
-get(){ echo "$J" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{const j=JSON.parse(d);const v=j['$1'];console.log(v)})"; }; DECISION="$(get decision)"; RISK="$(get risk)"; SUMMARY="$(get summary)"; FIXES="$(get fixes)"; MERGE_SAFE="$(get merge_safe)"; QUESTIONS="$(get questions)"
+get(){ echo "$J" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{const j=JSON.parse(d);const v=j['$1'];console.log(JSON.stringify(v))})"; }; DECISION="$(get decision)"; RISK="$(get risk)"; SUMMARY="$(get summary)"; FIXES="$(get fixes)"; MERGE_SAFE="$(get merge_safe)"; QUESTIONS="$(get questions)"
 
 # --- fix-awareness: filter out already-addressed items -----------------------
 # Claude keeps requesting the same fixes because he only sees the static diff.
