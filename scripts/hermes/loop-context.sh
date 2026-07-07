@@ -37,8 +37,9 @@ if [ -n "$OPEN_BRANCHES" ]; then
             fi
         fi
         if [ -n "$fix_file" ] && [ -f "$fix_file" ]; then
-            # Skip resolved fix items
-            if grep -q "✅.*RESOLVED" "$fix_file" 2>/dev/null; then
+             # Skip resolved/completed fix items
+            if grep -q "✅.*RESOLVED" "$fix_file" 2>/dev/null || \
+               grep -qiE "^COMPLETE — " "$fix_file" 2>/dev/null; then
                 continue
             fi
             
@@ -60,8 +61,9 @@ for f in "$BACKLOG_DIR"/*.md; do
     [[ "$base" == "README.md" ]] && continue
     [[ "$base" == *-*fix-pr* ]] && continue
     
-    # Skip resolved items — auto-resolved items get a Status section with RESOLVED
-    if grep -q "✅.*RESOLVED" "$f" 2>/dev/null; then
+    # Skip resolved/completed items — auto-resolved or manually marked done
+    if grep -q "✅.*RESOLVED" "$f" 2>/dev/null || \
+       grep -qiE "(COMPLETE|RESOLVED)" "$f" 2>/dev/null; then
         continue
     fi
     
