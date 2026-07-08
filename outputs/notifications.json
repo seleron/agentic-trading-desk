@@ -1,0 +1,65 @@
+[
+  {
+    "tier": "no_trade",
+    "symbol": "EREGL.IS",
+    "score": 68,
+    "message": "EREGL.IS scored 68/100 \u2014 below threshold. No trade.",
+    "action_required": false
+  },
+  {
+    "tier": "no_trade",
+    "symbol": "TUPRS.IS",
+    "score": 30,
+    "message": "TUPRS.IS scored 30/100 \u2014 below threshold. No trade.",
+    "action_required": false
+  },
+  {
+    "tier": "no_trade",
+    "symbol": "AKBNK.IS",
+    "score": 42,
+    "message": "AKBNK.IS scored 42/100 \u2014 below threshold. No trade.",
+    "action_required": false
+  },
+  {
+    "tier": "no_trade",
+    "symbol": "GARAN.IS",
+    "score": 47,
+    "message": "GARAN.IS scored 47/100 \u2014 below threshold. No trade.",
+    "action_required": false
+  },
+  {
+    "tier": "watchlist",
+    "symbol": "THYAO.IS",
+    "score": 77,
+    "message": "WATCHLIST: THYAO.IS scored 77/100. Monitor for breakout.",
+    "action_required": false
+  },
+  {
+    "tier": "watchlist",
+    "symbol": "ASELS.IS",
+    "score": 75,
+    "message": "WATCHLIST: ASELS.IS scored 75/100. Monitor for breakout.",
+    "action_required": false
+  },
+  {
+    "tier": "no_trade",
+    "symbol": "SISE.IS",
+    "score": 15,
+    "message": "SISE.IS scored 15/100 \u2014 below threshold. No trade.",
+    "action_required": false
+  },
+  {
+    "tier": "watchlist",
+    "symbol": "AKSEN.IS",
+    "score": 74,
+    "message": "WATCHLIST: AKSEN.IS scored 74/100. Monitor for breakout.",
+    "action_required": false
+  },
+  {
+    "tier": "no_trade",
+    "symbol": "KCHOL.IS",
+    "score": 18,
+    "message": "KCHOL.IS scored 18/100 \u2014 below threshold. No trade.",
+    "action_required": false
+  }
+]

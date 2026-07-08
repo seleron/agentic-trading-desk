@@ -67,12 +67,15 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
                 raw = []
                 for _, row in hist_yf.iterrows():
                     dt_str = row.name.strftime("%Y-%m-%d")
+                    o, h, l, c = float(row["Open"]), float(row["High"]), float(row["Low"]), float(row["Close"])
+                    if math.isnan(o) or math.isnan(h) or math.isnan(l) or math.isnan(c):
+                        continue  # skip incomplete/intraday rows
                     raw.append({
                         "date": dt_str,
-                        "open": float(row["Open"]),
-                        "high": float(row["High"]),
-                        "low": float(row["Low"]),
-                        "close": float(row["Close"]),
+                        "open": o,
+                        "high": h,
+                        "low": l,
+                        "close": c,
                         "volume": int(row["Volume"]) if not math.isnan(row["Volume"]) else 0,
                     })
                 print(f"  [INFO] {sym}: fetched via yfinance ({len(raw)} bars)", file=sys.stderr)
@@ -88,12 +91,15 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
                     raw = []
                     for _, row in hist_yf.iterrows():
                         dt_str = row.name.strftime("%Y-%m-%d")
+                        o, h, l, c = float(row["Open"]), float(row["High"]), float(row["Low"]), float(row["Close"])
+                        if math.isnan(o) or math.isnan(h) or math.isnan(l) or math.isnan(c):
+                            continue  # skip incomplete/intraday rows
                         raw.append({
                             "date": dt_str,
-                            "open": float(row["Open"]),
-                            "high": float(row["High"]),
-                            "low": float(row["Low"]),
-                            "close": float(row["Close"]),
+                            "open": o,
+                            "high": h,
+                            "low": l,
+                            "close": c,
                             "volume": int(row["Volume"]) if not math.isnan(row["Volume"]) else 0,
                         })
                     print(f"  [INFO] {sym}: fetched via yfinance ({len(raw)} bars)", file=sys.stderr)
@@ -301,12 +307,15 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
                     continue
                 bars = []
                 for _, row in hist_yf.iterrows():
+                    o, h, l, c = float(row["Open"]), float(row["High"]), float(row["Low"]), float(row["Close"])
+                    if math.isnan(o) or math.isnan(h) or math.isnan(l) or math.isnan(c):
+                        continue  # skip incomplete/intraday rows
                     bars.append({
                         "date": row.name.strftime("%Y-%m-%d"),
-                        "open": float(row["Open"]),
-                        "high": float(row["High"]),
-                        "low": float(row["Low"]),
-                        "close": float(row["Close"]),
+                        "open": o,
+                        "high": h,
+                        "low": l,
+                        "close": c,
                         "volume": int(row["Volume"]) if not math.isnan(row["Volume"]) else 0,
                     })
             else:

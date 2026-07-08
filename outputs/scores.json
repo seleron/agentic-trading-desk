@@ -1,0 +1,263 @@
+[
+  {
+    "symbol": "EREGL.IS",
+    "date": "2026-07-08",
+    "score": 68,
+    "raw_components": {
+      "trend": 19,
+      "momentum": 10,
+      "volume": 10,
+      "ema_structure": 10,
+      "pivot_position": 3,
+      "pivot_risk": 2,
+      "volatility": 7,
+      "technical_summary": 2,
+      "ichimoku_alignment": 5
+    },
+    "penalties_applied": 0,
+    "rationale": [
+      "EMA20 > EMA50 bullish alignment",
+      "EMA50 > EMA200 long trend confirmation",
+      "Close (41.52) above both EMAs",
+      "RSI 60 healthy trend zone",
+      "Volume 171.9M \u2265 20-day avg",
+      "Clean bullish EMA stack (20>50>200)",
+      "Between S1(38.8454) and R1(42.5279) - neutral zone",
+      "Above pivot, below R2(43.67) - bullish continuation zone",
+      "Optimal intraday volatility (3.2%)",
+      "Close in upper 25% of range - strong close",
+      "Price (41.52) above cloud, Tenkan(41.17) > Kijun(40.27) \u2014 strong bullish alignment"
+    ],
+    "admin_override": null
+  },
+  {
+    "symbol": "TUPRS.IS",
+    "date": "2026-07-08",
+    "score": 30,
+    "raw_components": {
+      "trend": 19,
+      "momentum": 16,
+      "volume": 0,
+      "ema_structure": 0,
+      "pivot_position": 3,
+      "pivot_risk": 2,
+      "volatility": 7,
+      "technical_summary": 0,
+      "ichimoku_alignment": 3
+    },
+    "penalties_applied": -20,
+    "rationale": [
+      "EMA50 > EMA200 long-term bullish",
+      "Close (247.40) above both EMAs",
+      "RSI 62 healthy trend zone",
+      "MACD bullish (above signal)",
+      "Between S1(224.0587) and R1(252.4413) - neutral zone",
+      "Above pivot, below R2(261.21) - bullish continuation zone",
+      "Optimal intraday volatility (3.7%)",
+      "Price (247.40) above cloud but Tenkan \u2264 Kijun \u2014 watch for TK cross",
+      "EMA20 < EMA50 - bearish structure"
+    ],
+    "admin_override": null
+  },
+  {
+    "symbol": "AKBNK.IS",
+    "date": "2026-07-08",
+    "score": 42,
+    "raw_components": {
+      "trend": 19,
+      "momentum": 0,
+      "volume": 0,
+      "ema_structure": 10,
+      "pivot_position": 3,
+      "pivot_risk": 3,
+      "volatility": 7,
+      "technical_summary": 0,
+      "ichimoku_alignment": 0
+    },
+    "penalties_applied": 0,
+    "rationale": [
+      "EMA20 > EMA50 bullish alignment",
+      "EMA50 > EMA200 long trend confirmation",
+      "Clean bullish EMA stack (20>50>200)",
+      "Between S1(66.85) and R1(80.7166) - neutral zone",
+      "Safely between S1 and R1 - low pivot risk",
+      "Optimal intraday volatility (2.3%)"
+    ],
+    "admin_override": null
+  },
+  {
+    "symbol": "GARAN.IS",
+    "date": "2026-07-08",
+    "score": 47,
+    "raw_components": {
+      "trend": 19,
+      "momentum": 0,
+      "volume": 0,
+      "ema_structure": 15,
+      "pivot_position": 3,
+      "pivot_risk": 3,
+      "volatility": 7,
+      "technical_summary": 0,
+      "ichimoku_alignment": 0
+    },
+    "penalties_applied": 0,
+    "rationale": [
+      "EMA20 > EMA50 bullish alignment",
+      "EMA50 > EMA200 long trend confirmation",
+      "Clean bullish EMA stack (20>50>200)",
+      "Near EMA20 (2.0% deviation) - pullback entry",
+      "Between S1(127.6371) and R1(142.2295) - neutral zone",
+      "Safely between S1 and R1 - low pivot risk",
+      "Optimal intraday volatility (2.0%)"
+    ],
+    "admin_override": null
+  },
+  {
+    "symbol": "THYAO.IS",
+    "date": "2026-07-08",
+    "score": 77,
+    "raw_components": {
+      "trend": 19,
+      "momentum": 16,
+      "volume": 15,
+      "ema_structure": 10,
+      "pivot_position": 3,
+      "pivot_risk": 2,
+      "volatility": 7,
+      "technical_summary": 0,
+      "ichimoku_alignment": 5
+    },
+    "penalties_applied": 0,
+    "rationale": [
+      "EMA20 > EMA50 bullish alignment",
+      "EMA50 > EMA200 long trend confirmation",
+      "Close (347.00) above both EMAs",
+      "RSI 74 strong momentum zone",
+      "MACD bullish (above signal)",
+      "Volume 87.4M \u2265 20-day avg",
+      "Strong conviction (vol > 1.5\u00d7 avg)",
+      "Clean bullish EMA stack (20>50>200)",
+      "Between S1(307.08) and R1(352.92) - neutral zone",
+      "Above pivot, below R2(367.08) - bullish continuation zone",
+      "Optimal intraday volatility (4.7%)",
+      "Price (347.00) above cloud, Tenkan(337.25) > Kijun(321.25) \u2014 strong bullish alignment"
+    ],
+    "admin_override": null
+  },
+  {
+    "symbol": "ASELS.IS",
+    "date": "2026-07-08",
+    "score": 75,
+    "raw_components": {
+      "trend": 19,
+      "momentum": 16,
+      "volume": 15,
+      "ema_structure": 10,
+      "pivot_position": 3,
+      "pivot_risk": 2,
+      "volatility": 7,
+      "technical_summary": 0,
+      "ichimoku_alignment": 3
+    },
+    "penalties_applied": 0,
+    "rationale": [
+      "EMA20 > EMA50 bullish alignment",
+      "EMA50 > EMA200 long trend confirmation",
+      "Close (401.75) above both EMAs",
+      "RSI 57 healthy trend zone",
+      "MACD bullish (above signal)",
+      "Volume 53.8M \u2265 20-day avg",
+      "Strong conviction (vol > 1.5\u00d7 avg)",
+      "Clean bullish EMA stack (20>50>200)",
+      "Between S1(358.8312) and R1(412.5022) - neutral zone",
+      "Above pivot, below R2(429.08) - bullish continuation zone",
+      "Optimal intraday volatility (3.7%)",
+      "Price (401.75) above cloud but Tenkan \u2264 Kijun \u2014 watch for TK cross"
+    ],
+    "admin_override": null
+  },
+  {
+    "symbol": "SISE.IS",
+    "date": "2026-07-08",
+    "score": 15,
+    "raw_components": {
+      "trend": 15,
+      "momentum": 0,
+      "volume": 10,
+      "ema_structure": 0,
+      "pivot_position": 3,
+      "pivot_risk": 0,
+      "volatility": 7,
+      "technical_summary": 0,
+      "ichimoku_alignment": 0
+    },
+    "penalties_applied": -20,
+    "rationale": [
+      "EMA50 > EMA200 long-term bullish",
+      "Volume 60.7M \u2265 20-day avg",
+      "Between S1(42.8669) and R1(46.8397) - neutral zone",
+      "Optimal intraday volatility (3.6%)",
+      "EMA20 < EMA50 - bearish structure"
+    ],
+    "admin_override": null
+  },
+  {
+    "symbol": "AKSEN.IS",
+    "date": "2026-07-08",
+    "score": 74,
+    "raw_components": {
+      "trend": 19,
+      "momentum": 10,
+      "volume": 15,
+      "ema_structure": 10,
+      "pivot_position": 3,
+      "pivot_risk": 5,
+      "volatility": 5,
+      "technical_summary": 2,
+      "ichimoku_alignment": 5
+    },
+    "penalties_applied": 0,
+    "rationale": [
+      "EMA20 > EMA50 bullish alignment",
+      "EMA50 > EMA200 long trend confirmation",
+      "Close (85.05) above both EMAs",
+      "RSI 58 healthy trend zone",
+      "Volume 9.8M \u2265 20-day avg",
+      "Strong conviction (vol > 1.5\u00d7 avg)",
+      "Clean bullish EMA stack (20>50>200)",
+      "Between S1(77.61) and R1(87.6566) - neutral zone",
+      "Safely between S1 and R1 - low pivot risk",
+      "Above pivot, below R2(90.76) - bullish continuation zone",
+      "Elevated volatility (5.6%) - watch risk",
+      "Close in upper 25% of range - strong close",
+      "Price (85.05) above cloud, Tenkan(83.03) > Kijun(81.42) \u2014 strong bullish alignment"
+    ],
+    "admin_override": null
+  },
+  {
+    "symbol": "KCHOL.IS",
+    "date": "2026-07-08",
+    "score": 18,
+    "raw_components": {
+      "trend": 15,
+      "momentum": 0,
+      "volume": 10,
+      "ema_structure": 0,
+      "pivot_position": 3,
+      "pivot_risk": 3,
+      "volatility": 7,
+      "technical_summary": 0,
+      "ichimoku_alignment": 0
+    },
+    "penalties_applied": -20,
+    "rationale": [
+      "EMA50 > EMA200 long-term bullish",
+      "Volume 26.6M \u2265 20-day avg",
+      "Between S1(181.7245) and R1(198.6089) - neutral zone",
+      "Safely between S1 and R1 - low pivot risk",
+      "Optimal intraday volatility (3.5%)",
+      "EMA20 < EMA50 - bearish structure"
+    ],
+    "admin_override": null
+  }
+]

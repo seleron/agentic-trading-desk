@@ -282,9 +282,9 @@ def compute_technical_summary_score(
 def compute_ichimoku_alignment_score(
     close: float, ichimoku: dict[str, Optional[float]] | None
 ) -> tuple[int, list[str]]:
-    """Ichimoku alignment scoring - max 10 points.
+    """Ichimoku alignment scoring - max 5 points.
 
-    Price above cloud (Senkou A + Senkou B) with Tenkan > Kijun → bullish (+7)
+    Price above cloud (Senkou A + Senkou B) with Tenkan > Kijun → bullish (+5)
     Price above cloud but Tenkan < Kijun → neutral/bearish cross (+3)
     No Ichimoku data or insufficient bars -> 0
 
@@ -328,7 +328,7 @@ def compute_ichimoku_alignment_score(
                 f"Price ({close:.2f}) above cloud but Tenkan ≤ Kijun — watch for TK cross"
             )
 
-    return min(score, 10), rationale
+    return min(score, 5), rationale
 
 
 def apply_penalties(rsi: Optional[float], volume: float, volume_avg_20: float, ema20: Optional[float], ema50: Optional[float]) -> tuple[int, list[str]]:

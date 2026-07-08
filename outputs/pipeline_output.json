@@ -1,0 +1,65 @@
+{
+  "date": "2026-07-08",
+  "exchange": "mexc",
+  "symbols_scanned": 9,
+  "selection": {
+    "no_trade_day": true,
+    "market_bias": "neutral",
+    "avg_score_all_stocks": 49.6,
+    "total_scanned": 9,
+    "qualified_above_threshold": 0,
+    "top_picks": []
+  },
+  "trade_plans": [],
+  "notifications_count": 9,
+  "eod_report": null,
+  "mtf_verification": {
+    "EREGL.IS": {
+      "weekly_trend_score": 3,
+      "daily_bullish": true,
+      "weekly_bullish": false
+    },
+    "TUPRS.IS": {
+      "weekly_trend_score": 3,
+      "daily_bullish": true,
+      "weekly_bullish": false
+    },
+    "AKBNK.IS": {
+      "weekly_trend_score": 3,
+      "daily_bullish": false,
+      "weekly_bullish": false
+    },
+    "GARAN.IS": {
+      "weekly_trend_score": 1,
+      "daily_bullish": false,
+      "weekly_bullish": false
+    },
+    "THYAO.IS": {
+      "weekly_trend_score": 3,
+      "daily_bullish": true,
+      "weekly_bullish": false
+    },
+    "ASELS.IS": {
+      "weekly_trend_score": 3,
+      "daily_bullish": true,
+      "weekly_bullish": false
+    },
+    "SISE.IS": {
+      "weekly_trend_score": 1,
+      "daily_bullish": false,
+      "weekly_bullish": false
+    },
+    "AKSEN.IS": {
+      "weekly_trend_score": 3,
+      "daily_bullish": true,
+      "weekly_bullish": false
+    },
+    "KCHOL.IS": {
+      "weekly_trend_score": 1,
+      "daily_bullish": false,
+      "weekly_bullish": false
+    }
+  },
+  "backtest_results": [],
+  "learning_ready": false
+}
