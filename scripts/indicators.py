@@ -150,6 +150,141 @@ def bollinger(close: list[float], period: int = 20, mult: float = 2.0):
     return mid, upper, lower, pct_b
 
 
+def calculate_atr(
+    highs: list[float], lows: list[float], closes: list[float], period: int = 14
+) -> list[Optional[float]]:
+    """Average True Range — None-padded warmup of `period` bars.
+
+    Args:
+        highs: High prices (oldest first).
+        lows: Low prices (oldest first).
+        closes: Close prices (oldest first).
+        period: ATR lookback period, default 14 (standard).
+
+    Returns:
+        List of ATR values with None padding in warmup.
+    """
+    n = len(closes)
+    if n < period + 1 or any(len(arr) < n for arr in (highs, lows)):
+        return [None] * max(n, period + 1)
+
+    out: list[Optional[float]] = [None] * n
+    # True ranges
+    tr_values: list[float] = []
+    for i in range(1, n):
+        high_low = highs[i] - lows[i]
+        high_close_prev = abs(highs[i] - closes[i - 1]) if i > 0 else 0.0
+        low_close_prev = abs(lows[i] - closes[i - 1]) if i > 0 else 0.0
+        tr_values.append(max(high_low, high_close_prev, low_close_prev))
+
+    # Wilder smoothing for ATR
+    first_atr = sum(tr_values[:period]) / period
+    out[period] = first_atr
+
+    for i in range(period + 1, n):
+        prev_atr = out[i - 1] or first_atr
+        out[i] = (prev_atr * (period - 1) + tr_values[i - 1]) / period
+
+    return out
+
+
+def calculate_ichimoku(
+    highs: list[float], lows: list[float], closes: list[float]
+) -> dict[str, Optional[float]] | None:
+    """Ichimoku Cloud components — returns latest values as structured dict.
+
+    Requires 74+ bars minimum (Kijun = 26, Senkou Span B = 52 + offset).
+    Returns None if insufficient data.
+
+    Components:
+        tenkan_sen: Conversion line ((9-period high + 9-period low)/2)
+        kijun_sen: Base line ((26-period high + 26-period low)/2)
+        senkou_span_a: Leading span A ((Tenkan + Kijun)/2, plotted 26 bars ahead)
+        senkou_span_b: Leading span B ((52-period high + 52-period low)/2, offset 26)
+        chikou_span: Lagging line (close shifted back 26 bars)
+
+    Args:
+        highs: High prices (oldest first).
+        lows: Low prices (oldest first).
+        closes: Close prices (oldest first).
+
+    Returns:
+        Dict with ichimoku component values or None if <74 bars.
+    """
+    n = len(closes)
+    if n < 74:
+        return None
+
+    def _pivot(series_highs: list[float], series_lows: list[float], period: int) -> float:
+        end_idx = len(series_highs) - 1
+        start_idx = max(0, end_idx - period + 1)
+        high_range = max(series_highs[start_idx:end_idx + 1])
+        low_range = min(series_lows[start_idx:end_idx + 1])
+        return (high_range + low_range) / 2.0
+
+    # Tenkan-sen (9-period pivot) — use last 9 bars
+    tenkan = _pivot(highs, lows, 9)
+
+    # Kijun-sen (26-period pivot) — use last 26 bars
+    kijun = _pivot(highs, lows, 26)
+
+    # Senkou Span A — plotted 26 bars ahead of current bar
+    senkou_a = round((tenkan + kijun) / 2.0, 4)
+
+    # Senkou Span B — (52-period pivot) offset 26 bars forward
+    span_b = _pivot(highs, lows, 52)
+    senkou_b = round(span_b, 4)
+
+    # Chikou Span — close shifted back 26 bars
+    chikou_idx = n - 1 - 26
+    chikou_span = closes[chikou_idx] if chikou_idx >= 0 else None
+
+    return {
+        "tenkan_sen": round(tenkan, 4),
+        "kijun_sen": round(kijun, 4),
+        "senkou_span_a": senkou_a,
+        "senkou_span_b": senkou_b,
+        "chikou_span": chikou_span,
+    }
+
+
+def calculate_vwap(
+    highs: list[float], lows: list[float], closes: list[float], volumes: list[float] | None = None
+) -> Optional[float]:
+    """Volume-Weighted Average Price — daily approximation.
+
+    On daily data this is a running VWAP (not true session VWAP). For intraday,
+    pass OHLCV bars and it computes the proper session VWAP from the last bar.
+
+    Args:
+        highs: High prices.
+        lows: Low prices.
+        closes: Close prices.
+        volumes: Volume values (default 1 if not provided — daily approximation).
+
+    Returns:
+        VWAP value for the latest bar, or None if insufficient data.
+    """
+    n = len(closes)
+    if n == 0:
+        return None
+
+    vols = volumes if volumes is not None else [1] * n
+    if any(len(v) != n for v in (highs, lows)):
+        return None
+
+    # Running VWAP: cumulative (typical_price * volume) / cumulative volume
+    cum_tp_vol = 0.0
+    cum_vol = 0.0
+    for i in range(n):
+        typical_price = (highs[i] + lows[i] + closes[i]) / 3.0
+        v = vols[i] if vols[i] > 0 else 1e-9
+        cum_tp_vol += typical_price * v
+        cum_vol += v
+
+    return round(cum_tp_vol / cum_vol, 4) if cum_vol > 0 else None
+
+
 # --------------------------------------------------------------------------
 # NaN-safe forward-fill utility
 # --------------------------------------------------------------------------
@@ -224,7 +359,15 @@ def _slope(series: list[Optional[float]], lookback: int) -> Optional[float]:
     return series[last_i] - series[prev_i]
 
 
-def compute(close: list[float], slope_lookback: int = 5, max_fill_gap: int = 10) -> dict:
+def compute(
+    close: list[float],
+    slope_lookback: int = 5,
+    max_fill_gap: int = 10,
+    highs: list[float] | None = None,
+    lows: list[float] | None = None,
+    volumes: list[float] | None = None,
+    atr_period: int = 14,
+) -> dict:
     """
     Computes the entire indicator stack and returns the latest values + recent slopes.
 
@@ -233,6 +376,10 @@ def compute(close: list[float], slope_lookback: int = 5, max_fill_gap: int = 10)
         slope_lookback: Bars to measure the EMA slope change (default 5 ~ one week).
         max_fill_gap: Maximum consecutive NaN gaps to forward-fill in indicators
                       (default 10 bars).  Longer gaps produce data quality warnings.
+        highs: High prices (required for ATR, Ichimoku, VWAP).
+        lows: Low prices (required for ATR, Ichimoku, VWAP).
+        volumes: Volume values (required for VWAP; defaults to [1]*n if not provided).
+        atr_period: ATR lookback period (default 14).
 
     Returns:
         Dict with indicator values and a ``data_quality_warnings`` list (may be empty).
@@ -253,6 +400,15 @@ def compute(close: list[float], slope_lookback: int = 5, max_fill_gap: int = 10)
     macd_line, macd_sig, macd_hist = macd(close, 12, 26, 9)
     trix_line, trix_sig = trix(close, 15, 9)
     bb_mid, bb_up, bb_lo, pct_b = bollinger(close, 20, 2.0)
+
+    # Extended indicators (ATR, Ichimoku, VWAP) — require OHLCV data
+    atr_values: list[Optional[float]] | None = None
+    ichimoku_result: dict[str, Optional[float]] | None = None
+    vwap_val: float | None = None
+    if highs is not None and lows is not None:
+        atr_values = calculate_atr(highs, lows, close, atr_period)
+        ichimoku_result = calculate_ichimoku(highs, lows, close)
+        vwap_val = calculate_vwap(highs, lows, close, volumes)
 
     # Forward-fill NaN gaps in critical series (EMA slopes and TRIX are the most
     # sensitive to missing data points).
