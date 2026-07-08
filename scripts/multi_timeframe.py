@@ -136,7 +136,11 @@ def multi_timeframe_analysis(
     aligned_tfs = [tf for tf, r in tf_results.items() if r.get("n_bars", 0) >= 50]
     scores_aligned = [r["score"] for r in tf_results.values() if r.get("n_bars", 0) >= 50]
 
-    all_same_direction = len(set(1 if s > 0 else -1 for s in scores_aligned)) <= 1 if scores_aligned else False
+    # Three-way sign so a neutral (0) timeframe isn't miscounted as bearish, and an
+    # all-neutral set isn't reported as "aligned". Aligned == every timeframe shares
+    # the SAME non-neutral direction.
+    _signs = {(1 if s > 0 else -1 if s < 0 else 0) for s in scores_aligned}
+    all_same_direction = (len(_signs) == 1 and 0 not in _signs) if scores_aligned else False
     partial_alignment = any(s != consensus_score and abs(s) == abs(consensus_score) for s in scores_aligned) if scores_aligned else False
 
     # Generate recommendation

@@ -59,7 +59,7 @@ def compute_trend_score(
     ema50: Optional[float],
     ema200: Optional[float] = None,
 ) -> tuple[int, list[str]]:
-    """Trend scoring - max 25 points.
+    """Trend scoring - capped at COMPONENT_WEIGHTS["trend"] (17).
 
     EMA20 > EMA50 -> +15 (bullish alignment)
     EMA50 > EMA200 -> +10 (long trend confirmation) - ema200 optional
@@ -90,13 +90,15 @@ def compute_trend_score(
             score += 10
             rationale.append(f"Close ({close:.2f}) above both EMAs")
 
-    return min(score, 19), rationale
+    # Cap at the declared component weight (single source of truth) so the raw
+    # component can never contribute more than its stated share of the 100-pt total.
+    return min(score, COMPONENT_WEIGHTS["trend"]), rationale
 
 
 def compute_momentum_score(
     rsi: Optional[float], macd: float, macd_signal: float, close: float, ema20: Optional[float]
 ) -> tuple[int, list[str]]:
-    """Momentum scoring - max 20 points.
+    """Momentum scoring - capped at COMPONENT_WEIGHTS["momentum"] (18).
 
     RSI zone-based:
       50-65 -> healthy trend (+10)
@@ -121,7 +123,7 @@ def compute_momentum_score(
         score += 10
         rationale.append("MACD bullish (above signal)")
 
-    return min(score, 16), rationale
+    return min(score, COMPONENT_WEIGHTS["momentum"]), rationale
 
 
 def compute_volume_score(volume: float, volume_avg_20: float) -> tuple[int, list[str]]:
@@ -140,7 +142,7 @@ def compute_volume_score(volume: float, volume_avg_20: float) -> tuple[int, list
             score += 5
             rationale.append("Strong conviction (vol > 1.5× avg)")
 
-    return min(score, 15), rationale
+    return min(score, COMPONENT_WEIGHTS["volume"]), rationale
 
 
 def compute_ema_structure_score(
@@ -166,7 +168,7 @@ def compute_ema_structure_score(
             score += 5
             rationale.append(f"Near EMA20 ({dev:.1f}% deviation) - pullback entry")
 
-    return min(score, 15), rationale
+    return min(score, COMPONENT_WEIGHTS["ema_structure"]), rationale
 
 
 def compute_pivot_score(
@@ -175,15 +177,14 @@ def compute_pivot_score(
     """Pivot position scoring - max 10 points.
 
     Close between S1 and R1 -> neutral (+3)
-    Close near support (S1 +/- 2%) -> +5 bounce opportunity
-    Close above pivot but below R1 -> bullish continuation (+7)
+    Close below pivot and within 2% of S1 -> +7 bounce opportunity
+    (Bullish above-pivot continuation is scored separately in
+    compute_pivot_risk_score's R2 branch, not here.)
     """
     score = 0
     rationale: list[str] = []
 
     if pivot is not None and close > 0:
-        dist_from_pivot = (close - pivot) / pivot * 100
-
         if s1 is not None and r1 is not None:
             if s1 <= close <= r1:
                 score += 3
@@ -194,7 +195,7 @@ def compute_pivot_score(
                     score += 7
                     rationale.append(f"Near support S1({s1:.2f}) - bounce opportunity")
 
-    return min(score, 10), rationale
+    return min(score, COMPONENT_WEIGHTS["pivot_position"]), rationale
 
 
 def compute_pivot_risk_score(
@@ -222,7 +223,7 @@ def compute_pivot_risk_score(
             score += 2
             rationale.append(f"Above pivot, below R2({r2:.2f}) - bullish continuation zone")
 
-    return min(score, 5), rationale
+    return min(score, COMPONENT_WEIGHTS["pivot_risk"]), rationale
 
 
 def compute_volatility_score(high: float, low: float, close: float) -> tuple[int, list[str]]:
@@ -246,7 +247,7 @@ def compute_volatility_score(high: float, low: float, close: float) -> tuple[int
             score += 5
             rationale.append(f"Elevated volatility ({atr_like:.1f}%) - watch risk")
 
-    return min(score, 10), rationale
+    return min(score, COMPONENT_WEIGHTS["volatility"]), rationale
 
 
 def compute_technical_summary_score(
@@ -276,7 +277,7 @@ def compute_technical_summary_score(
             score += 2
             rationale.append("Close in upper 25% of range - strong close")
 
-    return min(score, 5), rationale
+    return min(score, COMPONENT_WEIGHTS["technical_summary"]), rationale
 
 
 def compute_ichimoku_alignment_score(
@@ -328,7 +329,7 @@ def compute_ichimoku_alignment_score(
                 f"Price ({close:.2f}) above cloud but Tenkan ≤ Kijun — watch for TK cross"
             )
 
-    return min(score, 5), rationale
+    return min(score, COMPONENT_WEIGHTS["ichimoku_alignment"]), rationale
 
 
 def apply_penalties(rsi: Optional[float], volume: float, volume_avg_20: float, ema20: Optional[float], ema50: Optional[float]) -> tuple[int, list[str]]:
@@ -525,7 +526,11 @@ def select_top_picks(scores: list[dict], threshold: int = 80, top_n: int = 2) ->
 
     top_picks = above_threshold[:top_n]
     market_bias = "neutral"
-    avg_score = sum(s["score"] for s in scores) / len(scores) if scores else 0
+    # Market bias reflects genuine model scores only. Admin overrides write sentinel
+    # scores (ignore→-1, force_buy→95, force_sell→15) that would otherwise skew the
+    # mean — exclude any overridden quote from the average.
+    genuine = [s for s in scores if not s.get("admin_override")]
+    avg_score = sum(s["score"] for s in genuine) / len(genuine) if genuine else 0
 
     if avg_score > 55:
         market_bias = "positive"

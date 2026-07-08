@@ -205,8 +205,20 @@ def generate_trade_plan(
     }
 
     # Confidence scoring (0-1 scale)
-    trend_score = indicators.get("ema20") and current_price > indicators["ema20"] and indicators.get("ema20_slope", 0) > 0
-    momentum_conf = indicators.get("rsi14", 50) or 50
+    # NOTE: compute() always emits ema20_slope / rsi14 keys but sets them to None
+    # during indicator warmup, so `.get(k, default)` returns None (not the default).
+    # Guard explicitly, otherwise `None > 0` raises TypeError for any short-history
+    # symbol that has cleared its EMA20.
+    ema20 = indicators.get("ema20")
+    ema20_slope = indicators.get("ema20_slope")
+    trend_score = (
+        ema20 is not None
+        and current_price > ema20
+        and ema20_slope is not None
+        and ema20_slope > 0
+    )
+    rsi14 = indicators.get("rsi14")
+    momentum_conf = rsi14 if rsi14 is not None else 50
     if momentum_conf < 40:
         mom_score = 0.3
     elif momentum_conf < 55:

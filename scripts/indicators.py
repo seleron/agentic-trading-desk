@@ -166,7 +166,8 @@ def calculate_atr(
     """
     n = len(closes)
     if n < period + 1 or any(len(arr) < n for arr in (highs, lows)):
-        return [None] * max(n, period + 1)
+        # Honour the "same length as input" contract, even on the short path.
+        return [None] * n
 
     out: list[Optional[float]] = [None] * n
     # True ranges
@@ -182,7 +183,9 @@ def calculate_atr(
     out[period] = first_atr
 
     for i in range(period + 1, n):
-        prev_atr = out[i - 1] or first_atr
+        # Explicit None check: a legitimately-zero prior ATR (all-flat bars) is
+        # falsy, so `out[i-1] or first_atr` would wrongly substitute first_atr.
+        prev_atr = out[i - 1] if out[i - 1] is not None else first_atr
         out[i] = (prev_atr * (period - 1) + tr_values[i - 1]) / period
 
     return out
@@ -332,12 +335,13 @@ def forward_fill(
         if gap_start > 0 and series[gap_start - 1] is not None:
             fill_value = series[gap_start - 1]
         elif gap_start == 0:
-            # Leading Nones — try backward-fill from first non-None after the gap
-            j = i  # continue past this gap
-            while j < n and series[j] is None:
-                j += 1
-            if j < n and series[j] is not None:
-                fill_value = series[gap_start + 1]  # use next known value as approximation
+            # Leading Nones — back-fill from the first known value AFTER the gap.
+            # `i` already points at that first non-None (or n if the series is all
+            # None). The previous code used series[gap_start + 1] (== series[1]),
+            # which is still None for any leading gap of length >= 2, silently
+            # leaving the whole leading run unfilled.
+            if i < n and series[i] is not None:
+                fill_value = series[i]
 
         for k in range(gap_start, gap_start + gap_len):
             filled[k] = fill_value
