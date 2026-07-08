@@ -92,7 +92,7 @@ def compute_trend_score(
             score += 10
             rationale.append(f"Close ({close:.2f}) above both EMAs")
 
-    return min(score, 22), rationale
+    return min(score, COMPONENT_WEIGHTS["trend"]), rationale
 
 
 def compute_momentum_score(
@@ -123,7 +123,7 @@ def compute_momentum_score(
         score += 10
         rationale.append("MACD bullish (above signal)")
 
-    return min(score, 18), rationale
+    return min(score, COMPONENT_WEIGHTS["momentum"]), rationale
 
 
 def compute_volume_score(volume: float, volume_avg_20: float) -> tuple[int, list[str]]:
@@ -142,7 +142,7 @@ def compute_volume_score(volume: float, volume_avg_20: float) -> tuple[int, list
             score += 5
             rationale.append("Strong conviction (vol > 1.5× avg)")
 
-    return min(score, 15), rationale
+    return min(score, COMPONENT_WEIGHTS["volume"]), rationale
 
 
 def compute_ema_structure_score(
@@ -168,7 +168,7 @@ def compute_ema_structure_score(
             score += 5
             rationale.append(f"Near EMA20 ({dev:.1f}% deviation) - pullback entry")
 
-    return min(score, 15), rationale
+    return min(score, COMPONENT_WEIGHTS["ema_structure"]), rationale
 
 
 def compute_pivot_score(
@@ -196,7 +196,7 @@ def compute_pivot_score(
                     score += 7
                     rationale.append(f"Near support S1({s1:.2f}) - bounce opportunity")
 
-    return min(score, 10), rationale
+    return min(score, COMPONENT_WEIGHTS["pivot_position"]), rationale
 
 
 def compute_pivot_risk_score(
@@ -253,7 +253,7 @@ def compute_volatility_score(high: float, low: float, close: float) -> tuple[int
             score += 5
             rationale.append(f"Elevated volatility ({atr_like:.1f}%) - watch risk")
 
-    return min(score, 10), rationale
+    return min(score, COMPONENT_WEIGHTS["volatility"]), rationale
 
 
 def compute_technical_summary_score(
@@ -458,7 +458,6 @@ def score_quote(quote: dict, correction=None, *,
     )
 
     # Relative Strength modifier (post-hoc adjustment)
-    original_score = max(0, min(100, raw_total + penalties))
     rs_info: dict = {
         "ratio": None,
         "direction": 0,
@@ -474,9 +473,13 @@ def score_quote(quote: dict, correction=None, *,
         )
         # Apply +1/-1 modifier as post-hoc adjustment
         if rs_info["direction"] != 0:
-            final_score = max(0, min(100, original_score + rs_info["direction"]))
+            rs_info["adjusted"] = True
 
     final_score = max(0, min(100, raw_total + penalties))
+
+    # Apply RS modifier after base score is computed (no overwrite)
+    if rs_info.get("direction", 0) != 0:
+        final_score = max(0, min(100, final_score + rs_info["direction"]))
 
     all_reasons = (trend_reasons + momentum_reasons + volume_reasons + ema_reasons +
                    pivot_reasons + pivot_risk_reasons + vol_reasons + tech_reasons + penalty_reasons)
