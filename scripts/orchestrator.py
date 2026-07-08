@@ -139,10 +139,14 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
             continue
 
         # --- Feature engine: deterministic indicator stack from the close series ---
-        # (EMA 20/50/200, RSI-14 Wilder, MACD 12/26/9, TRIX, Bollinger). Populates
-        # data["indicators"] so both scoring and trade_plan consume real numbers.
         closes = [c["close"] for c in data["ohlcv_all"] if c.get("close") is not None]
-        ind = indicators_engine.compute(closes) if len(closes) >= 20 else {}
+        highs = [c["high"] for c in data["ohlcv_all"] if c.get("high") is not None]
+        lows = [c["low"] for c in data["ohlcv_all"] if c.get("low") is not None]
+        vols = [c.get("volume", 1) or 1 for c in data["ohlcv_all"]]
+
+        ind = indicators_engine.compute(
+            closes, highs=highs, lows=lows, volumes=vols
+        ) if len(closes) >= 20 else {}
         data["indicators"] = ind
 
         # Real 20-bar average volume (falls back to current volume if unavailable).
@@ -168,7 +172,7 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
             "volume_avg_20": volume_avg_20,
         }
 
-        # Pivot levels (Fibonacci: P, R1/S1, R2/S2)
+         # Pivot levels (Fibonacci: P, R1/S1, R2/S2)
         if len(data.get("ohlcv_all", [])) >= 20:
             recent = data["ohlcv_all"][-20:]
             high_20 = max(o["high"] for o in recent)
@@ -180,6 +184,9 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
             quote["s1"] = round(pivot - range_val * 0.382, 4) if range_val > 0 else None
             quote["r2"] = round(pivot + range_val * 0.618, 4) if range_val > 0 else None
             quote["s2"] = round(pivot - range_val * 0.618, 4) if range_val > 0 else None
+
+        # Pass ichimoku data to scoring engine for alignment component
+        quote["_ichimoku"] = ind.get("ichimoku")
 
         quotes.append(quote)
 

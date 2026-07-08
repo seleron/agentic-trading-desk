@@ -30,7 +30,7 @@ from typing import Optional
 # -- Scoring constants (configurable) ----------------------------------------
 
 COMPONENT_WEIGHTS = {
-    "trend": 22,
+    "trend": 17,
     "momentum": 18,
     "volume": 15,
     "ema_structure": 15,
@@ -38,6 +38,7 @@ COMPONENT_WEIGHTS = {
     "volatility": 10,
     "pivot_risk": 5,
     "technical_summary": 5,
+    "ichimoku_alignment": 5,
 }
 
 PENALTIES = {
@@ -89,7 +90,7 @@ def compute_trend_score(
             score += 10
             rationale.append(f"Close ({close:.2f}) above both EMAs")
 
-    return min(score, 22), rationale
+    return min(score, 19), rationale
 
 
 def compute_momentum_score(
@@ -120,7 +121,7 @@ def compute_momentum_score(
         score += 10
         rationale.append("MACD bullish (above signal)")
 
-    return min(score, 18), rationale
+    return min(score, 16), rationale
 
 
 def compute_volume_score(volume: float, volume_avg_20: float) -> tuple[int, list[str]]:
@@ -278,6 +279,58 @@ def compute_technical_summary_score(
     return min(score, 5), rationale
 
 
+def compute_ichimoku_alignment_score(
+    close: float, ichimoku: dict[str, Optional[float]] | None
+) -> tuple[int, list[str]]:
+    """Ichimoku alignment scoring - max 10 points.
+
+    Price above cloud (Senkou A + Senkou B) with Tenkan > Kijun → bullish (+7)
+    Price above cloud but Tenkan < Kijun → neutral/bearish cross (+3)
+    No Ichimoku data or insufficient bars -> 0
+
+    Args:
+        close: Current close price.
+        ichimoku: Dict from calculate_ichimoku() with tenkan_sen, kijun_sen,
+                  senkou_span_a, senkou_span_b, chikou_span keys.
+
+    Returns:
+        (score, rationale) tuple.
+    """
+    score = 0
+    rationale: list[str] = []
+
+    if ichimoku is None or close <= 0:
+        return 0, ["Ichimoku data unavailable — insufficient bars"]
+
+    tenkan = ichimoku.get("tenkan_sen")
+    kijun = ichimoku.get("kijun_sen")
+    senkou_a = ichimoku.get("senkou_span_a")
+    senkou_b = ichimoku.get("senkou_span_b")
+
+    if tenkan is None or kijun is None or senkou_a is None or senkou_b is None:
+        return 0, ["Ichimoku components incomplete"]
+
+    cloud_top = max(senkou_a, senkou_b)
+    cloud_bottom = min(senkou_a, senkou_b)
+
+    # Price above cloud — bullish condition
+    if close > cloud_top:
+        # Tenkan > Kijun (bullish TK cross confirmed) -> +7
+        if tenkan > kijun:
+            score += 7
+            rationale.append(
+                f"Price ({close:.2f}) above cloud, Tenkan({tenkan:.2f}) > Kijun({kijun:.2f}) — strong bullish alignment"
+            )
+        else:
+            # Price above cloud but TK cross bearish -> +3 (still bullish position)
+            score += 3
+            rationale.append(
+                f"Price ({close:.2f}) above cloud but Tenkan ≤ Kijun — watch for TK cross"
+            )
+
+    return min(score, 10), rationale
+
+
 def apply_penalties(rsi: Optional[float], volume: float, volume_avg_20: float, ema20: Optional[float], ema50: Optional[float]) -> tuple[int, list[str]]:
     """Apply penalty system from spec.
 
@@ -327,6 +380,9 @@ def score_quote(quote: dict, correction=None) -> dict:
     r1 = quote.get("r1")
     s1 = quote.get("s1")
 
+    # Ichimoku data — passed from indicators compute() output
+    ichimoku_data = quote.get("_ichimoku")
+
     # Volume average - require explicitly; skip volume component if absent.
     raw_volume_avg_20 = quote.get("volume_avg_20")
     volume_avg_20: Optional[float] = None
@@ -349,9 +405,11 @@ def score_quote(quote: dict, correction=None) -> dict:
     )
     volatility_score_val, vol_reasons = compute_volatility_score(high, low, close)
     tech_summary_score, tech_reasons = compute_technical_summary_score(close, open_price, high, low)
+    ichimoku_align_score, ichimoku_reasons = compute_ichimoku_alignment_score(close, ichimoku_data)
 
     raw_total = (trend_score + momentum_score + volume_score_val + ema_struct_score +
-                 pivot_score_val + pivot_risk_score_val + volatility_score_val + tech_summary_score)
+                 pivot_score_val + pivot_risk_score_val + volatility_score_val + tech_summary_score +
+                 ichimoku_align_score)
 
     penalties, penalty_reasons = apply_penalties(
         rsi, volume, volume_avg_20 if volume_avg_20 is not None else 0.0, ema20, ema50
@@ -359,7 +417,8 @@ def score_quote(quote: dict, correction=None) -> dict:
     final_score = max(0, min(100, raw_total + penalties))
 
     all_reasons = (trend_reasons + momentum_reasons + volume_reasons + ema_reasons +
-                   pivot_reasons + pivot_risk_reasons + vol_reasons + tech_reasons + penalty_reasons)
+                   pivot_reasons + pivot_risk_reasons + vol_reasons + tech_reasons +
+                   ichimoku_reasons + penalty_reasons)
 
     result = {
         "symbol": quote.get("symbol", "UNKNOWN"),
@@ -374,6 +433,7 @@ def score_quote(quote: dict, correction=None) -> dict:
             "pivot_risk": pivot_risk_score_val,
             "volatility": volatility_score_val,
             "technical_summary": tech_summary_score,
+            "ichimoku_alignment": ichimoku_align_score,
         },
         "penalties_applied": penalties,
         "rationale": all_reasons,

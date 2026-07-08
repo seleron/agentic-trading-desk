@@ -161,15 +161,28 @@ def generate_trade_plan(
 
     direction = "long" if is_long_entry else "short"
 
-    # Stop loss: for longs, below the lower band; for shorts, above the upper band.
-    atr_mult = 2.0
-    buffer = current_price * 0.01 * atr_mult
+    # Stop loss placement — prefer ATR-based if available, fall back to Bollinger Bands
+    atr_val = indicators.get("atr14")
     if direction == "long":
         bb_lower = indicators.get("bb_lower") or current_price * 0.95
-        stop_loss = bb_lower - buffer
+        if atr_val is not None and atr_val > 0:
+            # ATR-based stop loss (2× ATR below entry)
+            stop_loss = current_price - (atr_val * 2.0)
+            stop_basis = f"ATR({int(indicators.get('atr14', 14))}×{atr_val:.4f}) × 2"
+        else:
+            buffer = current_price * 0.01 * 2.0
+            stop_loss = bb_lower - buffer
+            stop_basis = "BB lower band − ATR buffer (fallback)"
     else:
         bb_upper = indicators.get("bb_upper") or current_price * 1.05
-        stop_loss = bb_upper + buffer
+        if atr_val is not None and atr_val > 0:
+            # ATR-based stop loss (2× ATR above entry)
+            stop_loss = current_price + (atr_val * 2.0)
+            stop_basis = f"ATR({int(indicators.get('atr14', 14))}×{atr_val:.4f}) × 2"
+        else:
+            buffer = current_price * 0.01 * 2.0
+            stop_loss = bb_upper + buffer
+            stop_basis = "BB upper band + ATR buffer (fallback)"
 
     # Position sizing
     position_info = calculate_position_size(
@@ -216,8 +229,7 @@ def generate_trade_plan(
         },
         "stop_loss": {
             "price": round(stop_loss, 6),
-            "basis": ("BB lower band − ATR buffer" if direction == "long"
-                      else "BB upper band + ATR buffer"),
+            "basis": stop_basis,
             "distance_pct": round(abs(current_price - stop_loss) / current_price * 100, 2),
         },
         **position_info,

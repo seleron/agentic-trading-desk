@@ -373,6 +373,8 @@ class TestComputeIntegration(unittest.TestCase):
             "trix_signal", "trix_signal_prev",
             "bars_since_below_ema20",
             "bb_mid", "bb_upper", "bb_lower", "percent_b",
+            # Additional indicators (ATR, Ichimoku, VWAP)
+            "atr14", "ichimoku", "vwap",
         }
         self.assertEqual(set(result.keys()), expected_keys)
 

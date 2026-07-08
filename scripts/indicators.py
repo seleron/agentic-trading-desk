@@ -458,6 +458,10 @@ def compute(
         "trix_signal": last(trix_sig), "trix_signal_prev": prev(trix_sig),
         "bars_since_below_ema20": bars_since_below_ema20,
         "bb_mid": bb_mid, "bb_upper": bb_up, "bb_lower": bb_lo, "percent_b": pct_b,
+        # Extended indicators (ATR, Ichimoku, VWAP)
+        "atr14": last(atr_values) if atr_values is not None else None,
+        "vwap": vwap_val,
+        "ichimoku": ichimoku_result,  # structured dict with tenkan/kijun/senkou/chikou or None
     }
 
 

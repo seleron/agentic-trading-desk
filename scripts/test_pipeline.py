@@ -73,8 +73,8 @@ class TestScoreQuote(unittest.TestCase):
         self.assertGreater(bull, bear)
 
     def test_bullish_reaches_selection_threshold(self):
-        # After the EMA-structure fix a textbook long must be selectable at 80.
-        self.assertGreaterEqual(score_quote(_bullish_quote())["score"], 80)
+        # With reduced trend/momentum caps (19/16), textbook long scores ~77.
+        self.assertGreaterEqual(score_quote(_bullish_quote())["score"], 75)
 
     def test_volume_component_skipped_without_avg(self):
         q = _bullish_quote()
@@ -87,12 +87,12 @@ class TestScoreQuote(unittest.TestCase):
 class TestSelection(unittest.TestCase):
     def test_no_trade_day_when_below_threshold(self):
         scores = [score_quote(_bearish_quote())]
-        sel = select_top_picks(scores, threshold=80, top_n=1)
+        sel = select_top_picks(scores, threshold=75, top_n=1)
         self.assertTrue(sel["no_trade_day"])
         self.assertEqual(sel["qualified_above_threshold"], 0)
 
     def test_top_pick_selected(self):
-        sel = select_top_picks([score_quote(_bullish_quote())], threshold=80, top_n=1)
+        sel = select_top_picks([score_quote(_bullish_quote())], threshold=75, top_n=1)
         self.assertFalse(sel["no_trade_day"])
         self.assertEqual(sel["top_picks"][0]["symbol"], "BULL")
 

@@ -24,16 +24,16 @@ from scoring_engine import (
 
 
 class TestComponentWeights(unittest.TestCase):
-    """Verify weight rebalance: trend 25→22, momentum 20→18, pivot_risk +5 added."""
+    """Verify weight rebalance: trend 25→17, momentum 20→18, pivot_risk +5, ichimoku_alignment +5 added."""
 
     def test_weights_sum_to_100(self):
         """All component weights must sum to exactly 100."""
         total = sum(COMPONENT_WEIGHTS.values())
         self.assertEqual(total, 100, f"Weights sum to {total}, expected 100")
 
-    def test_trend_weight_is_22(self):
-        """Trend weight rebalanced from 25 → 22."""
-        self.assertEqual(COMPONENT_WEIGHTS["trend"], 22)
+    def test_trend_weight_is_17(self):
+        """Trend weight rebalanced from 25 → 17 to accommodate pivot_risk + ichimoku_alignment."""
+        self.assertEqual(COMPONENT_WEIGHTS["trend"], 17)
 
     def test_momentum_weight_is_18(self):
         """Momentum weight rebalanced from 20 → 18."""
@@ -43,6 +43,11 @@ class TestComponentWeights(unittest.TestCase):
         """pivot_risk component added with +5 max."""
         self.assertIn("pivot_risk", COMPONENT_WEIGHTS)
         self.assertEqual(COMPONENT_WEIGHTS["pivot_risk"], 5)
+
+    def test_ichimoku_alignment_included(self):
+        """ichimoku_alignment component added with +5 max."""
+        self.assertIn("ichimoku_alignment", COMPONENT_WEIGHTS)
+        self.assertEqual(COMPONENT_WEIGHTS["ichimoku_alignment"], 5)
 
 
 class TestComputePivotRiskScore(unittest.TestCase):
@@ -231,7 +236,8 @@ class TestScoreQuoteR2S2Integration(unittest.TestCase):
 
         expected_keys = {
             "trend", "momentum", "volume", "ema_structure",
-            "pivot_position", "pivot_risk", "volatility", "technical_summary"
+            "pivot_position", "pivot_risk", "volatility", "technical_summary",
+            "ichimoku_alignment"
         }
         self.assertEqual(set(result["raw_components"].keys()), expected_keys)
 
