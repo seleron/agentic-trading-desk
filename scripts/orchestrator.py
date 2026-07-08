@@ -42,8 +42,15 @@ def load_config(config_path: str = "config.yaml") -> dict:
         }
 
 
-def run_full_pipeline(config: dict, output_dir: str) -> dict:
-    """Run the full pipeline end-to-end (single pass)."""
+def run_full_pipeline(config: dict, output_dir: str, *, benchmark_symbol: str | None = None) -> dict:
+    """Run the full pipeline end-to-end (single pass).
+
+    Args:
+        config: Configuration dict from load_config().
+        output_dir: Directory for pipeline output files.
+        benchmark_symbol: Optional symbol (e.g. '^BIST') for relative strength computation.
+                         If provided, fetches benchmark data and passes closes to scoring engine.
+    """
     os.makedirs(output_dir, exist_ok=True)
 
     # Step 1: Data Collection (via ccxt)
@@ -118,8 +125,24 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
     if not ohlcv_data:
         return {"error": "No data collected from ccxt", "symbols_checked": symbols}
     print("[2/9] Computing features and scoring...")
-    from scoring_engine import score_quotes
+    from scoring_engine import score_quotes, RS_DEFAULT_THRESHOLD
     import indicators as indicators_engine
+
+    # Fetch benchmark data if requested for relative strength computation
+    benchmark_closes: list[float] | None = None
+    rs_threshold = config.get("scoring", {}).get("rs_threshold", RS_DEFAULT_THRESHOLD)
+    if benchmark_symbol is not None:
+        print(f"  [INFO] Fetching benchmark data for '{benchmark_symbol}'...")
+        try:
+            import yfinance as _yf_bench
+            hist_bench = _yf_bench.Ticker(benchmark_symbol).history(period="5y")
+            if len(hist_bench) >= 20:
+                benchmark_closes = [float(c) for c in hist_bench["Close"] if not math.isnan(c)]
+                print(f"    [INFO] Benchmark data fetched ({len(benchmark_closes)} bars)", file=sys.stderr)
+            else:
+                print(f"    [WARN] Benchmark {benchmark_symbol}: insufficient data", file=sys.stderr)
+        except Exception as e_bench:
+            print(f"    [WARN] Benchmark fetch failed for '{benchmark_symbol}': {e_bench}", file=sys.stderr)
 
     quotes = []
     for symbol, data in ohlcv_data.items():
@@ -170,9 +193,16 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
             quote["r2"] = round(pivot + range_val * 0.618, 4) if range_val > 0 else None
             quote["s2"] = round(pivot - range_val * 0.618, 4) if range_val > 0 else None
 
-        quotes.append(quote)
+       # Pass ichimoku data to scoring engine for alignment component
+        quote["_ichimoku"] = ind.get("ichimoku")
 
-    scores_output = score_quotes(quotes)
+        # Stock closes series for relative strength computation
+        if len(closes) >= 20:
+            quote["stock_closes"] = closes
+
+        quotes.append(quote)
+    scores_output = score_quotes(quotes, admin_corrections=admin_corrections,
+                                  benchmark_closes=benchmark_closes, rs_threshold=rs_threshold)
     with open(os.path.join(output_dir, "scores.json"), "w") as f:
         json.dump(scores_output, f, indent=2)
 
@@ -312,6 +342,21 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
         except Exception as e:
             print(f"  [WARN] Backtest failed for {symbol}: {e}", file=sys.stderr)
 
+     # Build per-stock relative strength summary for pipeline output
+    rs_summary = {}
+    if benchmark_closes is not None:
+        for s in scores_output:
+            sym = s.get("symbol", "")
+            rs_info = s.get("relative_strength", {})
+            if rs_info:
+                rs_summary[sym] = {
+                    "ratio": rs_info.get("ratio"),
+                    "direction": rs_info.get("direction"),  # +1, -1, or 0
+                    "adjusted": rs_info.get("adjusted"),
+                    "stock_return_pct": rs_info.get("stock_return_pct"),
+                    "benchmark_return_pct": rs_info.get("benchmark_return_pct"),
+                }
+
     pipeline_output = {
         "date": date_type.today().isoformat(),
         "exchange": exchange_id,
@@ -323,6 +368,7 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
         "backtest_results": backtest_results,
         "eod_report": eod_report if not eod_report.get("no_trades") else None,
         "learning_ready": learning_result.get("ready", False),
+        "relative_strength": rs_summary if benchmark_closes is not None else {},
     }
 
     with open(os.path.join(output_dir, "pipeline_output.json"), "w") as f:
@@ -484,6 +530,8 @@ def main() -> int:
         "--intraday", action="store_true", default=False,
         help="Run in intraday mode — re-scan every N minutes instead of single pass.",
     )
+    ap.add_argument("--benchmark-symbol", type=str, default=None,
+                    help="Benchmark symbol (e.g. ^BIST) for relative strength computation")
     args = ap.parse_args()
 
     try:
@@ -495,11 +543,11 @@ def main() -> int:
     if args.symbols:
         config.setdefault("data", {})["symbols"] = args.symbols
 
-    # Determine intraday mode: CLI flag overrides config, config overrides default
+   # Determine intraday mode: CLI flag overrides config, config overrides default
     intraday_enabled = args.intraday or config.get("intraday", {}).get("enabled", False)
 
     if not intraday_enabled:
-        result = run_full_pipeline(config, args.output_dir)
+        result = run_full_pipeline(config, args.output_dir, benchmark_symbol=args.benchmark_symbol)
 
         # Print summary
         print("\n" + "=" * 60, file=sys.stderr)

@@ -51,6 +51,9 @@ PENALTIES = {
 RSI_HEALTHY = (50, 65)    # healthy trend
 RSI_STRONG = (65, 75)     # strong momentum
 
+# Relative Strength defaults (configurable via scoring.rs_threshold in config.yaml)
+RS_DEFAULT_THRESHOLD = 0.05  # 5% relative outperformance for +1 modifier
+
 
 def compute_trend_score(
     close: float,
@@ -314,8 +317,100 @@ def apply_penalties(rsi: Optional[float], volume: float, volume_avg_20: float, e
     return -total_penalty, reasons
 
 
-def score_quote(quote: dict) -> dict:
-    """Score a single stock quote. Returns full scoring breakdown."""
+def compute_relative_strength(
+    stock_closes: list[float],
+    benchmark_closes: list[float],
+    threshold: float = RS_DEFAULT_THRESHOLD,
+    lookback: int = 20,
+) -> dict:
+    """Compute relative strength ratio of a stock vs. a benchmark index.
+
+    The RS ratio is computed as the stock's return over benchmark's return
+    for a configurable lookback window (default 20 days).
+
+    RS ratio > (1 + threshold) → stock outperformed → modifier = +1
+    RS ratio < (1 - threshold) → stock underperformed → modifier = -1
+    Otherwise → neutral → modifier = 0
+
+    Args:
+        stock_closes: Close prices for the stock (latest at end).
+        benchmark_closes: Close prices for the benchmark index (latest at end).
+        threshold: Minimum relative outperformance/underperformance ratio.
+                   Default 0.05 (= 5%).
+        lookback: Number of recent bars to use for return computation.
+
+    Returns:
+        Dict with keys: ratio, direction (+1/-1/0), adjusted (bool),
+        stock_return_pct, benchmark_return_pct.
+    """
+    n = min(len(stock_closes), len(benchmark_closes))
+    if n < lookback + 1 or lookback < 1:
+        return {
+            "ratio": None,
+            "direction": 0,
+            "adjusted": False,
+            "stock_return_pct": None,
+            "benchmark_return_pct": None,
+        }
+
+    # Take the most recent `lookback+1` closes (index 0 = oldest in window)
+    stock_window = stock_closes[-(lookback + 1):]
+    bench_window = benchmark_closes[-(lookback + 1):]
+
+    start_stock = float(stock_window[0])
+    end_stock = float(stock_window[-1])
+    start_bench = float(bench_window[0])
+    end_bench = float(bench_window[-1])
+
+    if start_stock <= 0 or start_bench <= 0:
+        return {
+            "ratio": None,
+            "direction": 0,
+            "adjusted": False,
+            "stock_return_pct": None,
+            "benchmark_return_pct": None,
+        }
+
+    stock_return = (end_stock - start_stock) / start_stock
+    bench_return = (end_bench - start_bench) / start_bench
+
+    # Avoid division by zero on benchmark return
+    if abs(bench_return) < 1e-9:
+        # Benchmark essentially flat — use absolute stock return vs threshold
+        rs_ratio = end_stock / start_stock  # 1 + stock_return
+    else:
+        rs_ratio = (end_stock / start_stock) / (end_bench / start_bench)
+
+    direction = 0
+    adjusted = False
+    if rs_ratio >= (1.0 + threshold):
+        direction = 1
+        adjusted = True
+    elif rs_ratio <= (1.0 - threshold):
+        direction = -1
+        adjusted = True
+
+    return {
+        "ratio": round(rs_ratio, 6),
+        "direction": direction,
+        "adjusted": adjusted,
+        "stock_return_pct": round(stock_return * 100, 2),
+        "benchmark_return_pct": round(bench_return * 100, 2),
+    }
+
+
+def score_quote(quote: dict, correction=None, *,
+                benchmark_closes: list[float] | None = None,
+                rs_threshold: float = RS_DEFAULT_THRESHOLD) -> dict:
+    """Score a single stock quote. Returns full scoring breakdown.
+
+    Args:
+        quote: Stock quote dict with OHLCV and indicator data.
+        correction: Optional AdminCorrection for overrides.
+        benchmark_closes: Optional list of benchmark close prices (latest at end).
+                         Used to compute relative strength vs. a market index.
+        rs_threshold: Relative strength threshold (fraction). Default 0.05 = 5%.
+    """
     close = quote["close"]
     high = quote.get("high", close)
     low = quote.get("low", close)
@@ -361,12 +456,45 @@ def score_quote(quote: dict) -> dict:
     penalties, penalty_reasons = apply_penalties(
         rsi, volume, volume_avg_20 if volume_avg_20 is not None else 0.0, ema20, ema50
     )
+
+    # Relative Strength modifier (post-hoc adjustment)
+    original_score = max(0, min(100, raw_total + penalties))
+    rs_info: dict = {
+        "ratio": None,
+        "direction": 0,
+        "adjusted": False,
+        "stock_return_pct": None,
+        "benchmark_return_pct": None,
+    }
+
+    stock_closes = quote.get("stock_closes")
+    if benchmark_closes is not None and stock_closes is not None:
+        rs_info = compute_relative_strength(
+            stock_closes, benchmark_closes, threshold=rs_threshold
+        )
+        # Apply +1/-1 modifier as post-hoc adjustment
+        if rs_info["direction"] != 0:
+            final_score = max(0, min(100, original_score + rs_info["direction"]))
+
     final_score = max(0, min(100, raw_total + penalties))
 
     all_reasons = (trend_reasons + momentum_reasons + volume_reasons + ema_reasons +
                    pivot_reasons + pivot_risk_reasons + vol_reasons + tech_reasons + penalty_reasons)
 
-    return {
+   # Add RS rationale if applied
+    if rs_info["adjusted"]:
+        if rs_info["direction"] > 0:
+            all_reasons.append(
+                f"Relative strength outperformer (RS ratio={rs_info['ratio']:.4f}, "
+                f"stock {rs_info['stock_return_pct']}% vs bench {rs_info['benchmark_return_pct']}%) -> +1 modifier"
+            )
+        else:
+            all_reasons.append(
+                f"Relative strength underperformer (RS ratio={rs_info['ratio']:.4f}, "
+                f"stock {rs_info['stock_return_pct']}% vs bench {rs_info['benchmark_return_pct']}%) -> -1 modifier"
+            )
+
+    result = {
         "symbol": quote.get("symbol", "UNKNOWN"),
         "date": quote.get("date", ""),
         "score": final_score,
@@ -382,12 +510,88 @@ def score_quote(quote: dict) -> dict:
         },
         "penalties_applied": penalties,
         "rationale": all_reasons,
+        "relative_strength": rs_info,
     }
 
+    return result
 
-def score_quotes(quotes: list[dict]) -> list[dict]:
-    """Score a batch of stock quotes."""
-    return [score_quote(q) for q in quotes]
+
+def _apply_correction(score: dict, correction) -> None:
+    """Apply a single AdminCorrection to a scored quote dict (in-place)."""
+    symbol = score.get("symbol", "")
+    original_score = score["score"]
+
+    otype = getattr(correction, "override_type", None) or ""
+    rationale = getattr(correction, "rationale", "") or ""
+
+    if otype == "force_buy":
+        score["score"] = max(score["score"], 95)
+        score["admin_override"] = {
+            "type": "force_buy", "rationale": rationale,
+            "original_score": original_score,
+        }
+
+    elif otype == "force_sell":
+        score["score"] = min(score["score"], 15)
+        score["admin_override"] = {
+            "type": "force_sell", "rationale": rationale,
+            "original_score": original_score,
+        }
+
+    elif otype == "ignore":
+        score["score"] = -1  # below any threshold
+        score["admin_override"] = {
+            "type": "ignore", "rationale": rationale,
+            "original_score": original_score,
+        }
+
+    elif otype == "custom_weight_modifier":
+        raw_weights = dict(score.get("raw_components", {}))
+        custom_w = getattr(correction, "weights", {}) or {}
+        total_raw = sum(raw_weights.values()) if raw_weights else 1
+        adjusted_total = 0.0
+
+        for comp, val in raw_weights.items():
+            new_weight = custom_w.get(comp)
+            if new_weight is not None:
+                adjusted_total += val * (new_weight / COMPONENT_WEIGHTS.get(comp, 1))
+            else:
+                adjusted_total += val
+
+        # Clamp the adjusted score to [0, 100] range
+        new_score = max(0, min(100, adjusted_total + score["penalties_applied"]))
+        score["score"] = int(round(new_score))
+        score["admin_override"] = {
+            "type": "custom_weight_modifier", "rationale": rationale,
+            "original_score": original_score, "adjusted_score": new_score,
+        }
+
+
+def score_quotes(
+    quotes: list[dict],
+    admin_corrections=None,
+    *,
+    benchmark_closes: list[float] | None = None,
+    rs_threshold: float = RS_DEFAULT_THRESHOLD,
+) -> list[dict]:
+    """Score a batch of stock quotes.
+
+    Args:
+        quotes: List of quote dicts to score.
+        admin_corrections: Optional dict mapping symbol → AdminCorrection for applying overrides.
+        benchmark_closes: Optional list of benchmark close prices (latest at end).
+                         Passed through to each score_quote call for RS computation.
+        rs_threshold: Relative strength threshold (fraction). Default 0.05 = 5%.
+
+    Returns:
+        List of scored quote dicts with 'admin_override' and 'relative_strength' fields.
+    """
+    corrections = admin_corrections or {}
+    return [
+        score_quote(q, corrections.get(q.get("symbol", "")),
+                    benchmark_closes=benchmark_closes, rs_threshold=rs_threshold)
+        for q in quotes
+    ]
 
 
 def select_top_picks(scores: list[dict], threshold: int = 80, top_n: int = 2) -> dict:

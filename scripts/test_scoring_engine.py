@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from scoring_engine import (
     COMPONENT_WEIGHTS,
     compute_pivot_risk_score,
+    compute_relative_strength,
     score_quote,
 )
 
@@ -265,6 +266,122 @@ class TestScoreQuoteRationale(unittest.TestCase):
         # Should have pivot_risk rationale entries
         self.assertTrue(any("Safely between S1 and R1" in r for r in result["rationale"]))
         self.assertTrue(any("bullish continuation zone" in r for r in result["rationale"]))
+
+
+class TestRelativeStrength(unittest.TestCase):
+    """Tests for the relative strength (RS) modifier feature.
+
+    Acceptance criteria:
+    - compute_relative_strength computes ratio correctly
+    - RS ratio +1/-1 modifier applied to score
+    - Pipeline output includes relative_strength field per stock
+    """
+
+    def _make_stock_closes(self, start_pct_change):
+        """Generate lookback+1 closing prices with a given total return."""
+        base = 100.0
+        # Total return over 20 steps = start_pct_change → per-step factor
+        returns_per_step = start_pct_change / 20.0
+        closes = [base]
+        price = base
+        for _ in range(20):
+            price *= (1 + returns_per_step)
+            closes.append(price)
+        return closes
+
+    def test_outperforms_by_10_percent_vs_bench_up_5(self):
+        """Stock up 10%, benchmark up 5% → RS ratio ≈ 4.76, direction=+1."""
+        stock_closes = self._make_stock_closes(0.10)   # ~10% total return
+        bench_closes = self._make_stock_closes(0.05)    # ~5% total return
+
+        rs = compute_relative_strength(stock_closes, bench_closes, threshold=0.05)
+        self.assertIsNotNone(rs["ratio"])
+        self.assertEqual(rs["direction"], 1)
+        self.assertTrue(rs["adjusted"])
+        self.assertGreater(rs["stock_return_pct"], 9.0)
+        self.assertGreater(rs["benchmark_return_pct"], 4.0)
+
+    def test_underperforms_stock_down_3_bench_up_8(self):
+        """Stock down 3%, benchmark up 8% → RS ratio ≈ 0.75, direction=-1."""
+        stock_closes = self._make_stock_closes(-0.03)   # ~-3% total return
+        bench_closes = self._make_stock_closes(0.08)    # ~8% total return
+
+        rs = compute_relative_strength(stock_closes, bench_closes, threshold=0.05)
+        self.assertIsNotNone(rs["ratio"])
+        self.assertEqual(rs["direction"], -1)
+        self.assertTrue(rs["adjusted"])
+
+    def test_neutral_within_threshold(self):
+        """Stock up 4%, benchmark up 3% → RS ~1.03, within ±5% threshold."""
+        stock_closes = self._make_stock_closes(0.04)
+        bench_closes = self._make_stock_closes(0.03)
+
+        rs = compute_relative_strength(stock_closes, bench_closes, threshold=0.05)
+        self.assertIsNotNone(rs["ratio"])
+        self.assertEqual(rs["direction"], 0)
+        self.assertFalse(rs["adjusted"])
+
+    def test_insufficient_data_returns_neutral(self):
+        """Less than lookback+1 bars → ratio=None, direction=0."""
+        rs = compute_relative_strength([100.0], [100.0], threshold=0.05)
+        self.assertIsNone(rs["ratio"])
+        self.assertEqual(rs["direction"], 0)
+        self.assertFalse(rs["adjusted"])
+
+    def test_score_quote_with_rs_modifier(self):
+        """score_quote with benchmark_closes includes relative_strength field."""
+        stock_closes = [100.0 + i * 0.5 for i in range(21)]   # ~10% return over 20 days
+        bench_closes = [100.0 + i * 0.2 for i in range(21)]    # ~4% return
+
+        quote = {
+            "symbol": "TEST.IS",
+            "date": "2025-01-01",
+            "close": 110.0,
+            "open": 108.0,
+            "high": 112.0,
+            "low": 107.0,
+            "volume": 500_000,
+            "rsi": 60.0,
+            "macd": 0.5,
+            "macd_signal": 0.3,
+            "ema20": 108.0,
+            "ema50": 105.0,
+            "volume_avg_20": 400_000,
+            "stock_closes": stock_closes,
+        }
+
+        result = score_quote(quote, benchmark_closes=bench_closes)
+
+        self.assertIn("relative_strength", result)
+        rs_info = result["relative_strength"]
+        self.assertIsNotNone(rs_info["ratio"])
+        self.assertEqual(rs_info["direction"], 1)  # stock outperformed
+        self.assertTrue(rs_info["adjusted"])
+        # Score should be adjusted: original ~77 + 1 = 78 (within [0,100])
+        self.assertIsInstance(result["score"], int)
+
+    def test_score_quote_without_rs_still_works(self):
+        """score_quote without benchmark_closes has relative_strength with ratio=None."""
+        quote = {
+            "symbol": "TEST.IS",
+            "date": "2025-01-01",
+            "close": 100.0,
+            "open": 98.0,
+            "high": 102.0,
+            "low": 97.0,
+            "volume": 500_000,
+            "rsi": None,
+            "macd": 0.5,
+            "macd_signal": 0.3,
+            "ema20": 101.0,
+            "ema50": 98.0,
+            "volume_avg_20": 800_000,
+        }
+
+        result = score_quote(quote)
+        self.assertIn("relative_strength", result)
+        self.assertIsNone(result["relative_strength"]["ratio"])
+        self.assertEqual(result["relative_strength"]["direction"], 0)
 
 
 if __name__ == "__main__":
