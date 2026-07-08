@@ -209,7 +209,12 @@ def compute_pivot_risk_score(
     rationale: list[str] = []
 
     if close > 0 and pivot is not None and s1 is not None and r1 is not None:
-        margin = 0.03 * close  # 3% margin from S1/R1 edges
+        range_val = abs(r1 - s1)
+        # Cap margin so the safe zone never collapses to zero width for tight-range
+        # (low-volatility / low-volume stocks). Use at most 40% of range as margin,
+        # preserving a usable gap between S1+margin and R1-margin.
+        max_margin = min(0.5 * range_val, 0.25 * close) if range_val > 0 else 0.03 * close
+        margin = min(0.03 * close, max_margin)
 
         # Safely between S1 and R1 (not near edges)
         if close > s1 + margin and close < r1 - margin:
