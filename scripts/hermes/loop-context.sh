@@ -1,124 +1,76 @@
-#!/bin/bash
-# loop-context.sh — Priority-Based Backlog Selection for agentic-trading-desk
-# Mirrors Adverts-Project pattern: Tier 1 = review-fix items on open PR branches (Rank 0),
-# Tier 2 = ranked feature items sorted by rank then filename.
+#!/usr/bin/env bash
+#
+# loop-context.sh — preprocessor for the nightly improvement routine.
+#
+# Used as `hermes cron ... --script`: its stdout is injected into the agent's
+# prompt each run. It does the MECHANICAL work (no reasoning) so the local LLM
+# spends its budget on implementation, not discovery: current branch, the ONE
+# selected top backlog item, the ratchet baseline, and the gate command.
+#
+# Mirrors Adverts-Project/scripts/hermes/loop-context.sh, adapted to this
+# Python repo (lowercase `rank:` frontmatter; nightly selects only ranked,
+# already-approved items in backlog/[0-9]*.md — proposals in backlog/proposed/
+# are NOT implemented until the weekly review promotes them).
 
-export PATH="$HOME/.local/bin:$PATH"
-set -euo pipefail
+set -uo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$ROOT"
 
-REPO_DIR="$(cd "$(dirname "$0")/../../" && pwd)"
-BACKLOG_DIR="$REPO_DIR/backlog"
-CIRCLE_BRANCH="autonomous/scaffolding"
+# The loop operates on this branch (NOT main); nightly branches from and PRs
+# against it. Override with LOOP_BASE_BRANCH if you later move the loop's home.
+LOOP_BASE_BRANCH="${LOOP_BASE_BRANCH:-autonomous/scaffolding}"
+export LOOP_BASE_BRANCH
 
-# Fetch latest origin state
-cd "$REPO_DIR"
-git fetch origin --quiet 2>/dev/null || true
+echo "=== AUTONOMOUS LOOP CONTEXT (generated $(date -u +%FT%TZ)) ==="
+echo "Repo: $ROOT"
+echo "Branch (checkout): $(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
+echo "LOOP BASE BRANCH: $LOOP_BASE_BRANCH  (branch auto/<slug> from this, open PRs against this, NOT main)"
+echo "Latest base commit: $(git log -1 --oneline "origin/$LOOP_BASE_BRANCH" 2>/dev/null || git log -1 --oneline "$LOOP_BASE_BRANCH" 2>/dev/null)"
+echo
 
-# --- Tier 1: Open Branch Priority Feed ---
-OPEN_BRANCHES=$(gh pr list --repo seleron/agentic-trading-desk --state open --json number,title,headRefName --jq '.[] | "\(.number) \(.title)"' 2>/dev/null || true)
+# Sweep out any items already shipped by a merged PR BEFORE selecting — otherwise
+# the lowest-rank pick can land on an item whose PR already merged, and the run
+# wastes the night "re-validating" a done item. Best-effort and quiet (reconcile
+# self-guards to base+clean); the robust PR→item mapping lives in backlog-reconcile.sh.
+bash "$ROOT/scripts/hermes/backlog-reconcile.sh" >/dev/null 2>&1 || true
 
-PRIORITY_FILE=$(mktemp)
-trap "rm -f $PRIORITY_FILE" EXIT
+# is_open <file> — false if the item is marked resolved/complete (belt-and-braces;
+# reconcile normally deletes resolved files, but a manually-annotated one may linger).
+is_open() {
+  ! grep -qiE '✅[[:space:]]*(RESOLVED|COMPLETE)|(RESOLVED|COMPLETE)[[:space:]]*✅|^status:[[:space:]]*✅|^resolved:[[:space:]]*true' "$1" 2>/dev/null
+}
 
-if [ -n "$OPEN_BRANCHES" ]; then
-    for pr_line in $OPEN_BRANCHES; do
-        pr_num=$(echo "$pr_line" | awk '{print $1}')
-        # Check if a fix file exists for this PR — try local first, then origin/main
-        fix_file=""
-        fix_local="$BACKLOG_DIR/$(ls "$BACKLOG_DIR"/ 2>/dev/null | grep "fix-pr${pr_num}" || true)"
-        [ -n "$fix_local" ] && [ -f "$fix_local" ] && fix_file="$fix_local"
-        # Also check origin/main (where pr-review.sh files fix items)
-        if [ -z "$fix_file" ]; then
-            fix_remote=$(git ls-tree --name-only -r "origin/main" 2>/dev/null | grep "backlog/.*fix-pr${pr_num}" || true)
-            if [ -n "$fix_remote" ] && git cat-file -e "origin/main:$fix_remote" 2>/dev/null; then
-                fix_file="$BACKLOG_DIR/$(basename $fix_remote)"
-                # Copy it locally so the implementer can read it
-                git show "origin/main:$fix_remote" > "$fix_file" 2>/dev/null || true
-            fi
-        fi
-        if [ -n "$fix_file" ] && [ -f "$fix_file" ]; then
-             # Skip resolved/completed fix items (check multiple status patterns)
-            if grep -q "✅.*RESOLVED" "$fix_file" 2>/dev/null || \
-               grep -qiE "✅.*(COMPLETE|RESOLVED)" "$fix_file" 2>/dev/null || \
-               grep -qiE "^COMPLETE — " "$fix_file" 2>/dev/null; then
-                continue
-            fi
-            
-            # Fix items always get rank 0 (highest priority per spec)
-            rank="0"
-            title=$(grep -m 1 -i '^title:' "$fix_file" 2>/dev/null | sed 's/^title:\s*//' || echo "Fix PR #$pr_num")
-            branch=$(grep -m 1 -i '^branch:' "$fix_file" 2>/dev/null | awk '{print $2}' || echo "")
-            echo "${rank:-0} $fix_file $title — fix for PR#$pr_num (branch: $branch)" >> "$PRIORITY_FILE"
-        fi
-    done
-fi
+echo "--- TOP BACKLOG ITEM (implement THIS one only) ---"
+# Pick the open item with the lowest rank: (weekly review sets rank; review-fix
+# items carry rank 0 so they always sort first). Tie-break by filename. Missing
+# rank sorts last. ONLY top-level backlog/[0-9]*.md — proposals await approval.
+TOP="$(for f in backlog/[0-9]*.md; do
+  [ -e "$f" ] || continue
+  is_open "$f" || continue
+  rank=$(grep -m1 -iE '^rank:' "$f" | grep -oE '[0-9]+' | head -1)
+  printf '%05d\t%s\n' "${rank:-99999}" "$f"
+done | sort | head -1 | cut -f2)"
 
-# --- Tier 2: Ranked Feature Items (skip resolved) -----------------------------
-# Scan both main backlog/ and proposed/ subdirectories
-for dir in "$BACKLOG_DIR" "$BACKLOG_DIR/proposed"; do
-    [ ! -d "$dir" ] && continue
-    for f in "$dir"/*.md; do
-        [ ! -f "$f" ] && continue
-        base=$(basename "$f")
-    
-     # Skip README. Fix items are NOT skipped — they get rank 0 and sort first.
-      [[ "$base" == "README.md" ]] && continue
-    
-      # Skip resolved/completed items — auto-resolved or manually marked done
-      if grep -q "✅.*RESOLVED" "$f" 2>/dev/null || \
-         grep -qiE "^.*(COMPLETE|RESOLVED)" "$f" 2>/dev/null; then
-          continue
-      fi
-    
-      # Fix items always get rank 0 (highest priority) regardless of explicit rank field
-      is_fix="0"
-      [[ "$base" == *fix* ]] && is_fix="1"
-    
-      if [ "$is_fix" = "1" ]; then
-          rank="0"
-      else
-          rank=$(grep -m 1 -i '^rank:' "$f" 2>/dev/null | awk '{print $2}' || echo "999")
-      fi
-    title=$(grep -m 1 -i '^title:' "$f" 2>/dev/null | sed 's/^title:\s*//' || echo "$base")
-    
-    echo "${rank} ${BACKLOG_DIR}/$base $title" >> "$PRIORITY_FILE"
-    done
-done
-# Close outer for dir loop above, inner for f loop on line before that
-
-# Sort by rank (numeric), then filename (alpha). Deduplicate by filepath keeping first (Tier 1 entry preferred over Tier 2).
-DEDUPED=$(sort -k1,1n -k2,2 "$PRIORITY_FILE" | awk '!seen[$2]++')
-
-echo "=== AGENTIC-TRADING-DESK LOOP CONTEXT ==="
-echo "(generated $(date -u +%Y-%m-%dT%H:%M:%SZ))"
-echo ""
-
-if [ -z "$DEDUPED" ]; then
-    echo "No backlog items found. Create ranked items in backlog/ directory."
-    exit 0
-fi
-
-# Show all candidates for transparency
-echo "--- All Candidates ---"
-echo "$DEDUPED" | while read line; do
-    echo "  $line"
-done
-echo ""
-
-TOP_ITEM=$(echo "$DEDUPED" | head -1)
-RANK=$(echo "$TOP_ITEM" | awk '{print $1}')
-FILEPATH=$(echo "$TOP_ITEM" | awk '{print $2}')
-TITLE=$(echo "$TOP_ITEM" | cut -d' ' -f3-)
-
-echo "=== SELECTED ==="
-echo "Rank: $RANK"
-echo "File: $FILEPATH"
-echo "Title: $TITLE"
-echo ""
-
-# Output the full item content for context injection
-if [ -f "$FILEPATH" ]; then
-    cat "$FILEPATH"
+if [ -n "$TOP" ]; then
+  echo "File: $TOP"
+  echo "PR-BODY MARKER — paste this line verbatim into the PR body so the item is auto-removed on merge:"
+  # A review-fix item embeds its own Resolves-Backlog line carrying the original
+  # feature stem(s) too — emit that verbatim so the feature item isn't orphaned
+  # when the fix-round PR body overwrites the marker. Else default to the basename.
+  MARKER="$(grep -m1 -iE '^Resolves-Backlog:' "$TOP" 2>/dev/null || true)"
+  [ -z "$MARKER" ] && MARKER="Resolves-Backlog: $(basename "$TOP" .md)"
+  echo "$MARKER"
+  echo
+  cat "$TOP"
 else
-    echo "(file not found, may have been removed)"
+  echo "(no open backlog items — nothing to do; reply [SILENT])"
 fi
+echo
+
+echo "--- RATCHET BASELINE (must not regress) ---"
+[ -f metrics/baseline.json ] && python3 -c "import json;b=json.load(open('metrics/baseline.json'));print('minTests:', b.get('minTests','(unset)'))" 2>/dev/null
+echo
+
+echo "--- GATE ---"
+echo "Validate with: bash scripts/ci.sh   (must print GATE PASSED)"
+echo "=== END CONTEXT ==="

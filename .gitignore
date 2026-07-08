@@ -1,4 +1,6 @@
 __pycache__/
-__pycache__/
 *.db
 data/
+outputs/
+# Host-specific Hermes loop config (delivery targets, chat ids) — never commit.
+scripts/hermes/loop.env

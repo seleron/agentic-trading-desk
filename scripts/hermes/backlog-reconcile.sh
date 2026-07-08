@@ -1,144 +1,106 @@
 #!/usr/bin/env bash
 #
-# backlog-reconcile.sh — Auto-resolve backlog items when their linked PRs merge.
+# backlog-reconcile.sh [pr-number] — remove backlog items resolved by merged PRs.
 #
-# Called after a PR auto-merge (from pr-review.sh) or on-demand.
-# Scans backlog/ for items whose Resolves-Backlog line references the merged PR,
-# then marks them ✅ RESOLVED with merge date and branch info.
+#   no arg     : scan recently MERGED auto/* PRs into the base branch and
+#                reconcile any not done yet (catches human merges too).
+#   pr-number  : reconcile just that (already-merged) PR (used right after an
+#                auto-merge for promptness).
 #
-# Usage:
-#   backlog-reconcile.sh [pr-number]  — reconcile all, or just this PR's items
+# An item is resolved by PR #N when either:
+#   - PR #N's body has a `Resolves-Backlog: <stems/numbers>` marker, or
+#   - the item file has a `PR: #N` line (review-fix items), or
+#   - PR #N's body says "backlog item NNN" and backlog/NNN-*.md exists (fallback).
 #
-set -uo pipefail
+# Resolved items are DELETED (git rm) and the removal is committed+pushed to the
+# base branch under the loop git-lock. Set DRY_RUN=1 to preview without changes.
+#
+# Mirrors Adverts-Project/scripts/hermes/backlog-reconcile.sh.
 
+set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
-TARGET_PR="${1:-}"
+source "$ROOT/scripts/hermes/lib-loop.sh"
+BASE="${LOOP_BASE_BRANCH:-autonomous/scaffolding}"
+REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || echo seleron/agentic-trading-desk)"
+STATE="$HOME/.hermes/agentic-trading-reconciled-prs.txt"; touch "$STATE"
+DRY="${DRY_RUN:-0}"
+# Only mutate files when the checkout is actually on the base branch — otherwise a
+# reconcile triggered from a feature-branch checkout (loop-context / health-watch
+# run from whatever branch is out) would `git rm` files it can never commit,
+# leaving the tree dirty. Off-base runs report only; the next on-base run acts.
+ON_BASE=0
+[ "$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" = "$BASE" ] && ON_BASE=1
 
-log(){ printf '%s\n' "$*" >&2; }
+# Best-effort: fast-forward local base to origin so our removal commit pushes
+# cleanly (picks up any just-merged PR). Only when on a clean base checkout.
+git fetch origin "$BASE" -q 2>/dev/null || true
+if [ "$DRY" != "1" ] && [ "$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" = "$BASE" ] \
+   && [ -z "$(git status --porcelain 2>/dev/null)" ]; then
+  { flock 9; git merge --ff-only "origin/$BASE" -q 2>/dev/null || true; } 9>"$LOOP_LOCK"
+fi
 
-# --- Find merged PR numbers (last 7 days, from origin/main) ------------------
-MERGED_PRS=()
-if [ -z "$TARGET_PR" ]; then
-    # Scan recent merge commits on main for PR references
-    MERGED_FROM_MAIN=$(git log --oneline --since="7 days ago" "origin/main" \
-        --grep='^Merge pull request' 2>/dev/null | \
-        grep -oE '#[0-9]+' | tr -d '#' || true)
-    
-    # Also check PR API for recently merged ones targeting main or scaffolding
-    GH_MERGED=$(gh pr list --repo seleron/agentic-trading-desk --state merged --json number,baseRefName,state 2>/dev/null || echo "[]")
-    while IFS= read -r line; do
-        [ -z "$line" ] && continue
-        NUM=$(echo "$line" | python3 -c 'import sys,json;d=json.load(sys.stdin);print(d["number"])' 2>/dev/null || true)
-        BASE=$(echo "$line" | python3 -c 'import sys,json;d=json.load(sys.stdin);print(d["baseRefName"])' 2>/dev/null || true)
-        STATE=$(echo "$line" | python3 -c 'import sys,json;d=json.load(sys.stdin);print(d["state"])' 2>/dev/null || true)
-        if [ "$STATE" = "MERGED" ] && ([ "$BASE" = "main" ] || [ "$BASE" = "autonomous/scaffolding" ]); then
-            MERGED_PRS+=("$NUM")
-        fi
-    done < <(echo "$GH_MERGED" | python3 -c 'import sys,json;[print(json.dumps(x)) for x in json.load(sys.stdin)]' 2>/dev/null || true)
-    
-    # Combine both sources (deduplicate)
-    MERGED_PRS=$(printf '%s\n' "${MERGED_PRS[@]}" "$MERGED_FROM_MAIN" | tr ' ' '\n' | sed '/^$/d' | sort -un | paste -sd' ')
+resolve_items_for_pr() {  # echoes backlog file paths resolved by PR $1
+  local num="$1" body marker tok f n
+  body="$(gh pr view "$num" --json body --jq .body 2>/dev/null || true)"
+  marker="$(printf '%s' "$body" | grep -ioE 'Resolves-Backlog:.*' | sed -E 's/^[^:]*://' || true)"
+  # marker stems/numbers → files
+  for tok in $(printf '%s' "$marker" | tr ',' ' '); do
+    tok="$(printf '%s' "$tok" | tr -cd 'A-Za-z0-9-')"
+    [ -z "$tok" ] && continue
+    for f in backlog/*"$tok"*.md; do [ -e "$f" ] && echo "$f"; done
+  done
+  # review-fix items that name this PR
+  for f in backlog/[0-9]*.md; do
+    [ -e "$f" ] || continue
+    grep -qE "^PR:[[:space:]]*#?$num([^0-9]|$)" "$f" 2>/dev/null && echo "$f"
+  done
+  # Fallback: body says "backlog item NNN" and that file exists. Constrained to
+  # that literal phrase + an existing file so it can only remove an item the PR
+  # explicitly claims (the local LLM sometimes ships without the marker).
+  for n in $(printf '%s' "$body" | grep -ioE 'backlog item[^0-9]{0,6}[0-9]{3}' | grep -oE '[0-9]{3}' | sort -u); do
+    for f in backlog/"$n"-*.md; do [ -e "$f" ] && echo "$f"; done
+  done
+}
+
+reconcile_pr() {  # $1 = merged PR number
+  local num="$1" items f
+  items="$(resolve_items_for_pr "$num" | sort -u | grep -v '^$' || true)"
+  if [ -z "$items" ]; then echo "  PR #$num: no backlog items to remove" >&2; return; fi
+  while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    if [ "$DRY" = "1" ]; then echo "  [dry] would remove $f (PR #$num)" >&2
+    elif [ "$ON_BASE" != "1" ]; then echo "  [skip] $f resolved by PR #$num but checkout is not on $BASE — deferring removal" >&2
+    else git rm -q "$f" 2>/dev/null || rm -f "$f"; echo "  removed $f (PR #$num merged)" >&2; fi
+  done <<< "$items"
+  echo "PR #$num → resolved $(echo "$items" | tr '\n' ' ')"
+}
+
+if [ -n "${1:-}" ]; then
+  # Verify the specified PR is actually merged before removing its items.
+  ST="$(gh pr view "$1" --json state --jq .state 2>/dev/null || echo '')"
+  if [ "$ST" = "MERGED" ]; then reconcile_pr "$1"; else echo "PR #$1 is ${ST:-unknown} — nothing to reconcile" >&2; fi
 else
-    # Specific PR — verify it's merged
-    STATE=$(gh pr view "$TARGET_PR" --json state --jq '.state' 2>/dev/null || echo "")
-    if [ "$STATE" = "MERGED" ]; then
-        MERGED_PRS="$TARGET_PR"
-    else
-        log "PR #$TARGET_PR is $STATE — nothing to reconcile"
-        exit 0
-    fi
+  mapfile -t MERGED < <(gh pr list --repo "$REPO" --state merged --base "$BASE" --limit 30 \
+    --json number,headRefName --jq '.[]|select(.headRefName|startswith("auto/"))|.number' 2>/dev/null || true)
+  for num in "${MERGED[@]}"; do
+    [ -z "$num" ] && continue
+    grep -qx "$num" "$STATE" && continue
+    reconcile_pr "$num"
+    # Only record as done when we actually acted (on base, not dry) — otherwise a
+    # deferred off-base run would permanently mark it reconciled and never remove it.
+    [ "$DRY" != "1" ] && [ "$ON_BASE" = "1" ] && echo "$num" >> "$STATE"
+  done
 fi
 
-[ -z "$(echo "$MERGED_PRS" | tr -d '[:space:]')" ] && { log "[SILENT] No merged PRs found"; exit 0; }
-
-MERGE_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-RESOLVED_COUNT=0
-
-# --- Process each backlog item -----------------------------------------------
-for f in "$ROOT"/backlog/*.md; do
-    [ ! -f "$f" ] && continue
-    
-    # Skip README and proposed items
-    [[ "$(basename "$f")" == "README.md" ]] && continue
-    [[ "$(dirname "$f")" == *"proposed"* ]] && continue
-    
-    # Check if this item references any of our merged PRs
-    for pr_num in $MERGED_PRS; do
-        # Match patterns: "PR: #X", "Resolves-Backlog: X", or filename containing fix-prX
-        MATCH=0
-        
-        # Pattern 1: PR header line matching this PR number
-        if grep -qiE "^PR:[[:space:]]*#?${pr_num}([^0-9]|$)" "$f" 2>/dev/null; then
-            MATCH=1
-        fi
-        
-        # Pattern 2: Resolves-Backlog contains the item stem for this PR
-        if [ $MATCH -eq 0 ] && grep -qiE "^Resolves-Backlog:" "$f" 2>/dev/null; then
-            STEMS=$(grep -iE "^Resolves-Backlog:" "$f" | sed 's/^[^:]*://' | tr ',' ' ')
-            for stem in $STEMS; do
-                if echo "$stem" | grep -qi "fix-pr${pr_num}"; then
-                    MATCH=1
-                    break
-                fi
-            done
-        fi
-        
-        # Pattern 3: Filename contains fix-prX (for items like 008-fix-pr2.md)
-        if [ $MATCH -eq 0 ]; then
-            BASENAME=$(basename "$f" .md)
-            if echo "$BASENAME" | grep -qiE "fix-pr${pr_num}"; then
-                MATCH=1
-            fi
-        fi
-        
-        # Pattern 4: Body mentions the PR branch name or specific fix keywords
-        if [ $MATCH -eq 0 ]; then
-            BRANCH=$(gh pr view "$TARGET_PR" --json headRefName --jq '.headRefName' 2>/dev/null || echo "")
-            if grep -qi "feature/.*${pr_num}" "$f" 2>/dev/null || \
-               grep -qi "PR #${pr_num}" "$f" 2>/dev/null; then
-                MATCH=1
-            fi
-        fi
-        
-        if [ $MATCH -eq 1 ]; then
-             # Check if already resolved (both RESOLVED and COMPLETE patterns)
-             ALREADY_DONE=0
-             if grep -q "✅.*RESOLVED" "$f" 2>/dev/null; then
-                 ALREADY_DONE=1
-             fi
-             # Also check for old COMPLETE pattern
-             if grep -qiE "^COMPLETE — " "$f" 2>/dev/null || grep -qiE "^## Status\nCOMPLETE" "$f" 2>/dev/null; then
-                 ALREADY_DONE=1
-             fi
-            
-             if [ $ALREADY_DONE -eq 1 ]; then
-                 log "  SKIP $f — already resolved"
-                 continue
-             fi
-            # Mark as resolved
-            if grep -q "^## Status" "$f" 2>/dev/null; then
-                # Update existing status block
-                sed -i "s/^## Status$/## Status/" "$f"
-                sed -i "/^## Status/a\\✅ **RESOLVED** — PR #$pr_num merged at $MERGE_DATE." "$f"
-            else
-                # Append status section
-                printf '\n## Status\n✅ **RESOLVED** — PR #%s merged at %s.\n' "$pr_num" "$MERGE_DATE" >> "$f"
-            fi
-            
-            RESOLVED_COUNT=$((RESOLVED_COUNT + 1))
-            log "  ✅ RESOLVED $f (PR #$pr_num)"
-        fi
-    done
-done
-
-if [ $RESOLVED_COUNT -gt 0 ]; then
-    # Commit the resolution
-    if git add "$ROOT"/backlog/ && \
-       git commit -q -m "reconcile: auto-resolved $RESOLVED_COUNT backlog item(s) from merged PRs" 2>/dev/null; then
-        log "Committed resolution changes."
-    fi
+# Commit + push removals (only on the base branch, only if something changed).
+if [ "$DRY" != "1" ] && [ -n "$(git status --porcelain backlog/ 2>/dev/null)" ] \
+   && [ "$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" = "$BASE" ]; then
+  { flock 9
+    # -u: stage only deletions/modifications of tracked items — NEVER sweep
+    # untracked new backlog items someone is drafting into this commit.
+    git add -u backlog/ >/dev/null 2>&1
+    git commit -q -m "backlog: resolve items for merged PR(s)" >/dev/null 2>&1 || true
+    git push -q origin "HEAD:$BASE" >/dev/null 2>&1 && echo "  pushed backlog resolution" >&2 || true
+  } 9>"$LOOP_LOCK"
 fi
-
-[ $RESOLVED_COUNT -eq 0 ] && echo "[SILENT]" || echo "✅ Resolved $RESOLVED_COUNT backlog items from merged PRs"
-exit 0
