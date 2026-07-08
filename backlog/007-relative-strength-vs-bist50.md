@@ -5,6 +5,8 @@ area: analysis_enhancement
 depends_on: []
 ---
 
+✅ RESOLVED — Implemented in PR #6 on branch autonomous/relative-strength-vs-bist50. All acceptance criteria met.
+
 ## Why
 
 None of the comparable projects (RyanJHamby/stock-screener, ti_numba, borsapy) explicitly rank stocks by their **relative strength vs. a benchmark** — this is one of the most common filters used in professional scanners. stock-screener uses Mark Minervini's RS-Rank concept (price performance relative to all US stocks), but our project scores each stock absolutely without any cross-stock normalization.
