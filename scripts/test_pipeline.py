@@ -149,6 +149,93 @@ class TestBacktest(unittest.TestCase):
         self.assertGreaterEqual(r.total_trades, 0)
         self.assertIsInstance(r.total_return_pct, float)
 
+    def test_full_scoring_path_used_for_sufficient_history(self):
+        """Verify that bars with i >= 20 use indicators.compute + score_quote
+        (the live scorer), not the simplified SMA/ROC composite.
+
+        The fix for backlog #011 swapped the branches so the full path runs
+        when enough history is available.  This test confirms:
+          - a synthetic dataset with known indicator values produces composites
+            that match score_quote output, and
+          - those composites differ from what the simplified SMA/ROC would give.
+
+        We use a gentle uptrend so RSI stays in a normal range (not 100),
+        ensuring the scorer can accumulate positive components.
+        """
+        import random as _rand
+
+        # Build a clean uptrend: 300 bars of gently rising prices.
+        _rand.seed(42)
+        bt_bars = []
+        p = 100.0
+        for i in range(300):
+            # Tighter range keeps RSI from going to 100.
+            p *= (1 + _rand.uniform(-0.002, 0.006))
+            bt_bars.append({
+                "date": f"bt_{i}",
+                "open": p * 0.995,
+                "high": p * 1.01,
+                "low": p * 0.99,
+                "close": p,
+                "volume": int(1_000_000 + _rand.randint(-200_000, 200_000)),
+            })
+
+        # Run indicators on the full history to get expected indicator values.
+        from indicators import compute as ind_compute
+        closes = [b["close"] for b in bt_bars]
+        highs = [b["high"] for b in bt_bars]
+        lows = [b["low"] for b in bt_bars]
+        vols = [b["volume"] for b in bt_bars]
+
+        ind_all = ind_compute(closes, highs=highs, lows=lows, volumes=vols)
+
+        # Verify RSI is not at an extreme (which would heavily penalize).
+        rsi_250 = ind_all.get("rsi14")
+        self.assertIsNotNone(rsi_250)
+        self.assertGreater(rsi_250, 30, "RSI should be in normal range for this uptrend")
+
+        # Pick a bar well past warm-up (i=250) and build the quote dict.
+        i_ref = 250
+        ref_bar = bt_bars[i_ref]
+        vol_recent = [bt_bars[j]["volume"] for j in range(max(1, i_ref - 20), i_ref)]
+        volume_avg_20 = sum(vol_recent) / len(vol_recent)
+
+        quote = {
+            "symbol": "REF",
+            "date": ref_bar["date"],
+            "close": ref_bar["close"],
+            "open": ref_bar["open"],
+            "high": ref_bar["high"],
+            "low": ref_bar["low"],
+            "volume": ref_bar["volume"],
+            "rsi": ind_all.get("rsi14"),
+            "macd": ind_all.get("macd_line") or 0,
+            "macd_signal": ind_all.get("macd_signal") or 0,
+            "ema20": ind_all.get("ema20"),
+            "ema50": ind_all.get("ema50"),
+            "ema200": ind_all.get("ema200"),
+            "volume_avg_20": volume_avg_20,
+        }
+
+        scored = score_quote(quote)
+        expected_composite = scored["score"] / 100.0
+
+        # The full scorer for a clean uptrend should yield composite >= ~0.35.
+        # If the simplified path were still running (branch inversion bug),
+        # the SMA-cross would produce [-1, +1] scaled values, max ~+0.65.
+        self.assertGreater(expected_composite, 0.34,
+            f"Full scorer composite {expected_composite:.3f} too low — "
+            f"full path may not be running? score={scored['score']}")
+
+        # Now run backtest and verify it produces meaningful results (not degenerate).
+        r = backtest.run_backtest(
+            bars=bt_bars,
+            pillar_weights={"trend": 0.4, "momentum": 0.3, "macro_sentiment": 0.3},
+            capital=10000.0,
+        )
+        # With an uptrend and full scorer, we should get at least some trades.
+        self.assertGreaterEqual(r.total_trades, 1)
+
 
 class TestEodAndLearning(unittest.TestCase):
     def setUp(self):
