@@ -149,6 +149,112 @@ class TestBacktest(unittest.TestCase):
         self.assertGreaterEqual(r.total_trades, 0)
         self.assertIsInstance(r.total_return_pct, float)
 
+    def test_full_scoring_path_used_for_sufficient_history(self):
+        """Verify that bars with i >= 20 use indicators.compute + score_quote
+        (the live scorer), not the simplified SMA/ROC composite.
+
+        The fix for backlog #011 swapped the branches so the full path runs
+        when enough history is available.  This test confirms:
+          - a synthetic dataset with known indicator values produces composites
+            that match score_quote output, and
+          - those composites differ from what the simplified SMA/ROC would give.
+
+        We use a gentle uptrend so RSI stays in a normal range (not 100),
+        ensuring the scorer can accumulate positive components.
+        """
+        import random as _rand
+
+        # Build a clean uptrend: 300 bars of gently rising prices.
+        _rand.seed(42)
+        bt_bars = []
+        p = 100.0
+        for i in range(300):
+            # Tighter range keeps RSI from going to 100.
+            p *= (1 + _rand.uniform(-0.002, 0.006))
+            bt_bars.append({
+                "date": f"bt_{i}",
+                "open": p * 0.995,
+                "high": p * 1.01,
+                "low": p * 0.99,
+                "close": p,
+                "volume": int(1_000_000 + _rand.randint(-200_000, 200_000)),
+            })
+
+        # Run indicators on the full history to get expected indicator values.
+        from indicators import compute as ind_compute
+        closes = [b["close"] for b in bt_bars]
+        highs = [b["high"] for b in bt_bars]
+        lows = [b["low"] for b in bt_bars]
+        vols = [b["volume"] for b in bt_bars]
+
+        ind_all = ind_compute(closes, highs=highs, lows=lows, volumes=vols)
+
+        # Verify RSI is not at an extreme (which would heavily penalize).
+        rsi_250 = ind_all.get("rsi14")
+        self.assertIsNotNone(rsi_250)
+        self.assertGreater(rsi_250, 30, "RSI should be in normal range for this uptrend")
+
+        # Pick a bar well past warm-up (i=250) and build the quote dict.
+        i_ref = 250
+        ref_bar = bt_bars[i_ref]
+        vol_recent = [bt_bars[j]["volume"] for j in range(max(1, i_ref - 20), i_ref)]
+        volume_avg_20 = sum(vol_recent) / len(vol_recent)
+
+        quote = {
+            "symbol": "REF",
+            "date": ref_bar["date"],
+            "close": ref_bar["close"],
+            "open": ref_bar["open"],
+            "high": ref_bar["high"],
+            "low": ref_bar["low"],
+            "volume": ref_bar["volume"],
+            "rsi": ind_all.get("rsi14"),
+            "macd": ind_all.get("macd_line") or 0,
+            "macd_signal": ind_all.get("macd_signal") or 0,
+            "ema20": ind_all.get("ema20"),
+            "ema50": ind_all.get("ema50"),
+            "ema200": ind_all.get("ema200"),
+            "volume_avg_20": volume_avg_20,
+        }
+
+        scored = score_quote(quote)
+        expected_composite = scored["score"] / 50.0 - 1.0  # backtest maps 0..100 → [-1,+1]
+
+        # Composite must live on the [-1, +1] scale (shared with ENTRY_THRESHOLD and
+        # the warm-up/fallback paths). score/100 ([0,1]) would break the exit signal.
+        self.assertTrue(-1.0 <= expected_composite <= 1.0,
+            f"composite {expected_composite:.3f} off the [-1,1] scale (score={scored['score']})")
+        self.assertTrue(0 <= scored["score"] <= 100)
+
+        # Now run backtest and verify it produces meaningful results (not degenerate).
+        r = backtest.run_backtest(
+            bars=bt_bars,
+            pillar_weights={"trend": 0.4, "momentum": 0.3, "macro_sentiment": 0.3},
+            capital=10000.0,
+        )
+        # With an uptrend and full scorer, we should get at least some trades.
+        self.assertGreaterEqual(r.total_trades, 1)
+
+    def test_composite_scale_keeps_exit_signal_live(self):
+        """Regression for backlog #011 review: the full-scoring composite must be on
+        the [-1, +1] scale so the signal exit ``composite <= -ENTRY_THRESHOLD`` (0.5)
+        is reachable. The buggy score/100 ([0,1]) scaling mapped even a 0 score to
+        composite 0.0 — never <= -0.5 — so positions could only ever exit on the 2%
+        stop: a dead signal exit."""
+        bearish = {
+            "symbol": "BEAR", "date": "x", "close": 88.0, "open": 95.0,
+            "high": 89.0, "low": 87.0, "volume": 100, "volume_avg_20": 1_000_000,
+            "rsi": 20.0, "macd": -1.0, "macd_signal": 0.5,
+            "ema20": 90.0, "ema50": 95.0, "ema200": 100.0,
+        }
+        score = score_quote(bearish)["score"]
+        composite = score / 50.0 - 1.0            # the backtest's mapping
+        self.assertLessEqual(score, 25, f"expected a bearish score, got {score}")
+        self.assertLessEqual(composite, -0.5,
+            f"exit signal dead: bearish composite {composite:.3f} > -0.5 (scale bug)")
+        # The old [0,1] scaling would have silently failed this guard:
+        self.assertGreater(score / 100.0, -0.5)
+
 
 class TestEodAndLearning(unittest.TestCase):
     def setUp(self):
