@@ -41,7 +41,7 @@ def load_config(config_path: str = "config.yaml") -> dict:
         }
 
 
-def run_full_pipeline(config: dict, output_dir: str) -> dict:
+def run_full_pipeline(config: dict, output_dir: str, args=None) -> dict:
     """Run the full pipeline end-to-end."""
     os.makedirs(output_dir, exist_ok=True)
 
@@ -123,7 +123,7 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
     if not ohlcv_data:
         return {"error": "No data collected from ccxt", "symbols_checked": symbols}
 
-    # Load admin corrections before scoring (so overrides apply to computed scores)
+     # Load admin corrections before scoring (so overrides apply to computed scores)
     print("[1.5/9] Loading admin corrections...")
     try:
         from admin_corrections import load_corrections_from_config, is_ignored as _is_ignored
@@ -133,6 +133,25 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
     except Exception as e:
         print(f"  [WARN] Admin corrections load failed ({e}), continuing without overrides", file=sys.stderr)
         admin_corrections = {}
+
+    # Fetch benchmark closes for relative strength computation (if --benchmark-symbol provided)
+    benchmark_closes: list[float] | None = None
+    rs_threshold = config.get("scoring", {}).get("rs_threshold", 0.05) if isinstance(config, dict) else 0.05
+    rs_lookback = int(config.get("scoring", {}).get("rs_lookback", 20)) if isinstance(config, dict) else 20
+    
+    print("[1.7/9] Fetching benchmark for relative strength...")
+    benchmark_symbol = getattr(args, "benchmark_symbol", None) if args is not None else None
+    if benchmark_symbol:
+        try:
+            import yfinance as _yf  # noqa: F811 — local block only
+            hist_bench = _yf.Ticker(benchmark_symbol).history(period="5y")
+            if len(hist_bench) >= 20:
+                benchmark_closes = [float(c) for c in hist_bench["Close"] if not math.isnan(c)]
+                print(f"  [INFO] Benchmark {benchmark_symbol}: fetched {len(benchmark_closes)} bars", file=sys.stderr)
+            else:
+                print(f"  [WARN] Benchmark {benchmark_symbol}: insufficient data ({len(hist_bench)}) — RS disabled", file=sys.stderr)
+        except Exception as e:
+            print(f"  [WARN] Benchmark fetch failed for {benchmark_symbol} ({e}) — RS disabled", file=sys.stderr)
 
     print("[2/9] Computing features and scoring...")
     from scoring_engine import score_quotes
@@ -176,6 +195,8 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
             "ema50": ind.get("ema50"),
             "ema200": ind.get("ema200"),
             "volume_avg_20": volume_avg_20,
+            # Recent close window for the relative-strength modifier (vs benchmark).
+            "close_series": closes[-rs_lookback:],
         }
 
          # Pivot levels (Fibonacci: P, R1/S1, R2/S2)
@@ -196,7 +217,11 @@ def run_full_pipeline(config: dict, output_dir: str) -> dict:
 
         quotes.append(quote)
 
-    scores_output = score_quotes(quotes, admin_corrections=admin_corrections)
+    scores_output = score_quotes(
+        quotes, admin_corrections=admin_corrections,
+        benchmark_closes=(benchmark_closes[-rs_lookback:] if benchmark_closes else None),
+        rs_threshold=rs_threshold,
+    )
     with open(os.path.join(output_dir, "scores.json"), "w") as f:
         json.dump(scores_output, f, indent=2)
 
@@ -377,6 +402,8 @@ def main() -> int:
     ap.add_argument("--config", "-c", default="config.yaml", help="Config file path")
     ap.add_argument("--output-dir", "-o", default="./outputs/", help="Output directory for results")
     ap.add_argument("--symbols", nargs="+", default=None, help="Override symbols from config")
+    ap.add_argument("--benchmark-symbol", "-b", default=None,
+                    help="Benchmark symbol for relative strength (e.g., BIST50.IS)")
     args = ap.parse_args()
 
     try:
@@ -388,7 +415,7 @@ def main() -> int:
     if args.symbols:
         config.setdefault("data", {})["symbols"] = args.symbols
 
-    result = run_full_pipeline(config, args.output_dir)
+    result = run_full_pipeline(config, args.output_dir, args=args)
 
     # Print summary
     print("\n" + "=" * 60, file=sys.stderr)

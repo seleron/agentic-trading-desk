@@ -52,6 +52,63 @@ PENALTIES = {
 RSI_HEALTHY = (50, 65)    # healthy trend
 RSI_STRONG = (65, 75)     # strong momentum
 
+# Default RS threshold — ratio >= +threshold → +1, <= -threshold → -1
+DEFAULT_RS_THRESHOLD = 0.05
+
+
+def compute_relative_strength(
+    stock_closes: list[float], benchmark_closes: list[float], threshold: float | None = None
+) -> dict[str, int | float] | None:
+    """Compute relative strength ratio of a stock vs a benchmark.
+
+    Args:
+        stock_closes: List of stock closing prices (oldest first). Must have ≥2 values.
+        benchmark_closes: List of benchmark closing prices (oldest first). Must have ≥2 values.
+        threshold: RS threshold for +1/-1 modifier (default: DEFAULT_RS_THRESHOLD = 0.05).
+
+    Returns:
+        Dict with ratio, direction (+1/0/-1), or None if insufficient data.
+    """
+    if threshold is None:
+        threshold = DEFAULT_RS_THRESHOLD
+
+    if len(stock_closes) < 2 or len(benchmark_closes) < 2:
+        return None
+
+    stock_0 = stock_closes[0]
+    stock_n = stock_closes[-1]
+    bench_0 = benchmark_closes[0]
+    bench_n = benchmark_closes[-1]
+
+    if stock_0 <= 0 or bench_0 <= 0:
+        return None
+
+    # Stock return and benchmark return over the lookback window
+    stock_return = (stock_n / stock_0) - 1.0
+    bench_return = (bench_n / bench_0) - 1.0
+
+    if abs(bench_return) < 1e-9:
+        # Benchmark flat — no meaningful RS; return neutral
+        return {"ratio": 0.0, "direction": 0, "stock_return_pct": round(stock_return * 100, 2),
+                "benchmark_return_pct": 0.0}
+
+    ratio = (stock_n / stock_0) / (bench_n / bench_0)
+
+    # Map ratio to +1/-1 modifier using threshold
+    if ratio >= (1.0 + threshold):
+        direction = 1
+    elif ratio <= (1.0 - threshold):
+        direction = -1
+    else:
+        direction = 0
+
+    return {
+        "ratio": round(ratio, 4),
+        "direction": direction,
+        "stock_return_pct": round(stock_return * 100, 2),
+        "benchmark_return_pct": round(bench_return * 100, 2),
+    }
+
 
 def compute_trend_score(
     close: float,
@@ -363,8 +420,20 @@ def apply_penalties(rsi: Optional[float], volume: float, volume_avg_20: float, e
     return -total_penalty, reasons
 
 
-def score_quote(quote: dict, correction=None) -> dict:
-    """Score a single stock quote. Returns full scoring breakdown."""
+def score_quote(quote: dict, correction=None, benchmark_closes: list[float] | None = None,
+                rs_threshold: float | None = None) -> dict:
+    """Score a single stock quote. Returns full scoring breakdown.
+
+    Args:
+        quote: Stock quote dict with OHLCV and indicator data.
+        correction: Optional AdminCorrection for admin overrides.
+        benchmark_closes: Optional list of benchmark closing prices (oldest first).
+            If provided, relative strength modifier is computed and applied.
+        rs_threshold: RS threshold for +1/-1 modifier (default: DEFAULT_RS_THRESHOLD).
+
+    Returns:
+        Scored quote dict with 'relative_strength' field when benchmark_closes provided.
+    """
     close = quote["close"]
     high = quote.get("high", close)
     low = quote.get("low", close)
@@ -415,7 +484,18 @@ def score_quote(quote: dict, correction=None) -> dict:
     penalties, penalty_reasons = apply_penalties(
         rsi, volume, volume_avg_20 if volume_avg_20 is not None else 0.0, ema20, ema50
     )
-    final_score = max(0, min(100, raw_total + penalties))
+
+    # Relative strength modifier (if benchmark data provided) — applied in the SAME assignment
+    rs_info = None
+    if benchmark_closes is not None and "close_series" in quote:
+        stock_closes = quote["close_series"]  # historical closes for RS computation
+        rs_info = compute_relative_strength(stock_closes, benchmark_closes, rs_threshold)
+
+    # Single final_score assignment: base score clamped + optional RS modifier (±1), then re-clamped
+    raw_total_with_penalties = raw_total + penalties
+    if rs_info is not None and int(rs_info.get("direction", 0)) != 0:
+        raw_total_with_penalties += int(rs_info["direction"])
+    final_score = max(0, min(100, raw_total_with_penalties))
 
     all_reasons = (trend_reasons + momentum_reasons + volume_reasons + ema_reasons +
                    pivot_reasons + pivot_risk_reasons + vol_reasons + tech_reasons +
@@ -439,6 +519,15 @@ def score_quote(quote: dict, correction=None) -> dict:
         "penalties_applied": penalties,
         "rationale": all_reasons,
     }
+
+    # Include relative strength info when benchmark data was provided
+    if rs_info is not None:
+        result["relative_strength"] = {
+            "ratio": rs_info["ratio"],
+            "direction": rs_info["direction"],  # +1 / 0 / -1
+            "stock_return_pct": rs_info["stock_return_pct"],
+            "benchmark_return_pct": rs_info["benchmark_return_pct"],
+        }
 
     # Apply admin correction if present (must import locally to avoid circular deps)
     result["admin_override"] = None
@@ -499,18 +588,25 @@ def _apply_correction(score: dict, correction) -> None:
         }
 
 
-def score_quotes(quotes: list[dict], admin_corrections=None) -> list[dict]:
+def score_quotes(quotes: list[dict], admin_corrections=None,
+                 benchmark_closes: list[float] | None = None,
+                 rs_threshold: float | None = None) -> list[dict]:
     """Score a batch of stock quotes.
 
     Args:
         quotes: List of quote dicts to score.
         admin_corrections: Optional dict mapping symbol → AdminCorrection for applying overrides.
+        benchmark_closes: Optional list of benchmark closing prices (oldest first).
+            Passed through to each score_quote() call for RS modifier computation.
 
     Returns:
-        List of scored quote dicts with 'admin_override' field added where applicable.
+        List of scored quote dicts with 'admin_override' and optionally 'relative_strength' fields.
     """
     corrections = admin_corrections or {}
-    return [score_quote(q, corrections.get(q.get("symbol", ""))) for q in quotes]
+    return [
+        score_quote(q, corrections.get(q.get("symbol", "")), benchmark_closes=benchmark_closes, rs_threshold=rs_threshold)
+        for q in quotes
+    ]
 
 
 def select_top_picks(scores: list[dict], threshold: int = 80, top_n: int = 2) -> dict:
