@@ -206,7 +206,11 @@ def run_backtest(
                 }
 
                 scored = score_quote(quote)
-                composite = scored.get("score", 0.48) / 100.0  # normalize to ~[0, 1] range
+                # Map the 0..100 score to [-1, +1] so it shares ENTRY_THRESHOLD's scale
+                # with the warm-up SMA/ROC and exception fallback paths. Using score/100
+                # ([0,1]) made the exit `composite <= -ENTRY_THRESHOLD` unreachable — a dead
+                # exit signal (backlog #011 review).
+                composite = scored.get("score", 50) / 50.0 - 1.0
 
             except Exception:
                 # Fallback if scoring imports fail (e.g. missing modules)

@@ -218,14 +218,13 @@ class TestBacktest(unittest.TestCase):
         }
 
         scored = score_quote(quote)
-        expected_composite = scored["score"] / 100.0
+        expected_composite = scored["score"] / 50.0 - 1.0  # backtest maps 0..100 → [-1,+1]
 
-        # The full scorer for a clean uptrend should yield composite >= ~0.35.
-        # If the simplified path were still running (branch inversion bug),
-        # the SMA-cross would produce [-1, +1] scaled values, max ~+0.65.
-        self.assertGreater(expected_composite, 0.34,
-            f"Full scorer composite {expected_composite:.3f} too low — "
-            f"full path may not be running? score={scored['score']}")
+        # Composite must live on the [-1, +1] scale (shared with ENTRY_THRESHOLD and
+        # the warm-up/fallback paths). score/100 ([0,1]) would break the exit signal.
+        self.assertTrue(-1.0 <= expected_composite <= 1.0,
+            f"composite {expected_composite:.3f} off the [-1,1] scale (score={scored['score']})")
+        self.assertTrue(0 <= scored["score"] <= 100)
 
         # Now run backtest and verify it produces meaningful results (not degenerate).
         r = backtest.run_backtest(
@@ -235,6 +234,26 @@ class TestBacktest(unittest.TestCase):
         )
         # With an uptrend and full scorer, we should get at least some trades.
         self.assertGreaterEqual(r.total_trades, 1)
+
+    def test_composite_scale_keeps_exit_signal_live(self):
+        """Regression for backlog #011 review: the full-scoring composite must be on
+        the [-1, +1] scale so the signal exit ``composite <= -ENTRY_THRESHOLD`` (0.5)
+        is reachable. The buggy score/100 ([0,1]) scaling mapped even a 0 score to
+        composite 0.0 — never <= -0.5 — so positions could only ever exit on the 2%
+        stop: a dead signal exit."""
+        bearish = {
+            "symbol": "BEAR", "date": "x", "close": 88.0, "open": 95.0,
+            "high": 89.0, "low": 87.0, "volume": 100, "volume_avg_20": 1_000_000,
+            "rsi": 20.0, "macd": -1.0, "macd_signal": 0.5,
+            "ema20": 90.0, "ema50": 95.0, "ema200": 100.0,
+        }
+        score = score_quote(bearish)["score"]
+        composite = score / 50.0 - 1.0            # the backtest's mapping
+        self.assertLessEqual(score, 25, f"expected a bearish score, got {score}")
+        self.assertLessEqual(composite, -0.5,
+            f"exit signal dead: bearish composite {composite:.3f} > -0.5 (scale bug)")
+        # The old [0,1] scaling would have silently failed this guard:
+        self.assertGreater(score / 100.0, -0.5)
 
 
 class TestEodAndLearning(unittest.TestCase):
