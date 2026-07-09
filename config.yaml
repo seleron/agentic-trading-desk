@@ -62,6 +62,7 @@ data_quality:
 scoring:
   threshold: 80
   top_n: 2
+  rs_threshold: 0.05  # Relative strength threshold (5%) — ratio >= +threshold → +1, <= -threshold → -1
   component_weights:
     trend: 25
     momentum: 20
