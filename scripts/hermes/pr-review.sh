@@ -136,6 +136,14 @@ CRITICAL RULES:
   the change's value depends on a premise not established in this repo, treat it as
   unmet — do not pretend it's achievable.
 - One concern per PR: scope creep is a REQUEST_CHANGES, not an APPROVE-with-caveat.
+- TRACE NUMERIC SCALES / UNITS / RANGES. When the diff computes a value that is later
+  compared to a threshold or combined with other values (scores, composites, ratios,
+  normalized signals, prices vs pct), check that ALL such values share the SAME scale/
+  range/unit. Work out the actual min/max a value can take and confirm every branch it
+  feeds is REACHABLE. A comparison that can never be true (e.g. a composite normalized to
+  [0,1] tested against a `<= -0.5` exit threshold → the exit is dead) is a logic bug even
+  though it compiles and tests pass — REQUEST_CHANGES. Be especially suspicious when a PR
+  changes how a value is normalized/scaled but does NOT touch the thresholds it feeds.
 - Otherwise judge correctness, scope, and safety.
 
 DECISION VALUES:
