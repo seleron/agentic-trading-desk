@@ -1,5 +1,5 @@
 {
-  "minTests": 160,
+  "minTests": 193,
   "timestamp": "2026-07-07T23:00:00Z",
   "branch": "feature/intraday-scanner",
   "tests": {
