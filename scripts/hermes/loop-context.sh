@@ -20,6 +20,7 @@ cd "$ROOT"
 # against it. Override with LOOP_BASE_BRANCH if you later move the loop's home.
 LOOP_BASE_BRANCH="${LOOP_BASE_BRANCH:-autonomous/scaffolding}"
 export LOOP_BASE_BRANCH
+REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || echo seleron/agentic-trading-desk)"
 
 echo "=== AUTONOMOUS LOOP CONTEXT (generated $(date -u +%FT%TZ)) ==="
 echo "Repo: $ROOT"
@@ -40,6 +41,24 @@ is_open() {
   ! grep -qiE '✅[[:space:]]*(RESOLVED|COMPLETE)|(RESOLVED|COMPLETE)[[:space:]]*✅|^status:[[:space:]]*✅|^resolved:[[:space:]]*true' "$1" 2>/dev/null
 }
 
+# Stems already covered by an OPEN auto/* PR — don't re-pick these feature items;
+# their PR is in flight (in review or awaiting merge) and re-implementing duplicates it.
+OPEN_PR_STEMS="$(gh pr list --repo "$REPO" --state open --base "$LOOP_BASE_BRANCH" \
+  --json headRefName,body \
+  --jq '.[] | select(.headRefName|startswith("auto/")) | .body' 2>/dev/null \
+  | grep -ioE '^Resolves-Backlog:.*' | sed -E 's/^[^:]*://' | tr ',' ' ' | tr ' ' '\n' \
+  | sed '/^$/d' | awk '!seen[$0]++' || true)"
+
+# is_fix <file> — review-fix items (rank 0) are EXEMPT from the in-flight guard:
+# they exist precisely to update an open PR's branch.
+is_fix() { case "$(basename "$1")" in *fix-pr*) return 0;; esac; grep -qiE '^area:[[:space:]]*review-fix' "$1" 2>/dev/null; }
+
+# is_in_flight <file> — true if a non-fix item is already covered by an open PR.
+is_in_flight() {
+  is_fix "$1" && return 1
+  printf '%s\n' "$OPEN_PR_STEMS" | grep -qxF "$(basename "$1" .md)"
+}
+
 echo "--- TOP BACKLOG ITEM (implement THIS one only) ---"
 # Pick the open item with the lowest rank: (weekly review sets rank; review-fix
 # items carry rank 0 so they always sort first). Tie-break by filename. Missing
@@ -47,6 +66,7 @@ echo "--- TOP BACKLOG ITEM (implement THIS one only) ---"
 TOP="$(for f in backlog/[0-9]*.md; do
   [ -e "$f" ] || continue
   is_open "$f" || continue
+  is_in_flight "$f" && continue          # skip items whose PR is already open
   rank=$(grep -m1 -iE '^rank:' "$f" | grep -oE '[0-9]+' | head -1)
   printf '%05d\t%s\n' "${rank:-99999}" "$f"
 done | sort | head -1 | cut -f2)"
