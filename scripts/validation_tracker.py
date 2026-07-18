@@ -67,7 +67,7 @@ def _is_trading_day(d: date) -> bool:
 def _get_morning_closes(
     symbols: list[str], target_date: str
 ) -> dict[str, dict]:
-    """Fetch morning snapshot prices via yfinance for BIST tickers.
+    """Fetch morning snapshot prices via borsapy for BIST tickers.
 
     Returns a dict mapping symbol → {close, high, low, open, volume, timestamp}
     using the last available daily candle before market open (~10:30 TRT).
@@ -79,26 +79,25 @@ def _get_morning_closes(
     Returns:
         Dict of symbol → price dict, or empty dict on failure.
     """
-    import yfinance as yf
+    from borsapy import Tickers as _bt
 
     result = {}
     for sym in symbols:
         try:
-            ticker = yf.Ticker(f"{sym}.IS")
-            hist = ticker.history(period="5d", auto_adjust=True)
-            if hist.empty:
+            hist_bp = _bt(f"{sym}.IS").history(period="5d", interval="1d")
+            if hist_bp is None or len(hist_bp) == 0:
                 logger.warning("No history for %s.IS — skipping", sym)
                 continue
 
             # Get the last available row (most recent data point)
-            latest = hist.iloc[-1]
+            latest = hist_bp.iloc[-1]
             result[sym] = {
                 "close": float(latest["Close"]),
                 "open": float(latest["Open"]),
                 "high": float(latest["High"]),
                 "low": float(latest["Low"]),
                 "volume": int(latest["Volume"]) if not math.isnan(latest["Volume"]) else 0,
-                "timestamp": hist.index[-1].isoformat(),
+                "timestamp": pd.Timestamp(hist_bp.index[-1]).isoformat(),
             }
         except Exception as exc:
             logger.warning("Failed to fetch morning data for %s.IS: %s", sym, exc)
@@ -109,7 +108,7 @@ def _get_morning_closes(
 def _get_eod_closes(
     symbols: list[str], target_date: str
 ) -> dict[str, dict]:
-    """Fetch end-of-day closing prices via yfinance.
+    """Fetch end-of-day closing prices via borsapy.
 
     Uses the same daily candle as morning (market closes at 17:30 TRT).
 

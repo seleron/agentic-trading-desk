@@ -20,6 +20,8 @@ import os
 import sys
 from datetime import date as date_type
 
+import pandas as pd
+
 # Allow both `python3 scripts/orchestrator.py` (scripts/ on sys.path) and
 # `python3 -m scripts.orchestrator`: ensure this dir is importable as flat modules.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -57,16 +59,16 @@ def run_full_pipeline(config: dict, output_dir: str, args=None) -> dict:
         try:
             raw = fetch_bist_data(sym)
             if not raw or len(raw) < 20:
-                # Fallback to yfinance when ccxt lacks the symbol
-                import yfinance as _yf  # noqa: F811 — local block only
-                hist_yf = _yf.Ticker(sym).history(period="5y")
-                if len(hist_yf) < 20:
+                # Fallback to borsapy when ccxt lacks the symbol
+                from borsapy import Tickers as _bt
+                hist_bp = _bt(sym).history(period="5y", interval="1d")
+                if hist_bp is None or len(hist_bp) < 20:
                     print(f"  [WARN] {sym}: insufficient data ({len(raw) if raw else 0} candles)", file=sys.stderr)
                     continue
-                # Convert yfinance OHLCV to ccxt-compatible dict format
+                # Convert borsapy OHLCV to ccxt-compatible dict format
                 raw = []
-                for _, row in hist_yf.iterrows():
-                    dt_str = row.name.strftime("%Y-%m-%d")
+                for dt, row in hist_bp.iterrows():
+                    dt_str = pd.Timestamp(dt).strftime("%Y-%m-%d") if isinstance(dt, pd.Timestamp) else str(dt)[:10]
                     o, h, l, c = float(row["Open"]), float(row["High"]), float(row["Low"]), float(row["Close"])
                     if math.isnan(o) or math.isnan(h) or math.isnan(l) or math.isnan(c):
                         continue  # skip incomplete/intraday rows
@@ -78,19 +80,19 @@ def run_full_pipeline(config: dict, output_dir: str, args=None) -> dict:
                         "close": c,
                         "volume": int(row["Volume"]) if not math.isnan(row["Volume"]) else 0,
                     })
-                print(f"  [INFO] {sym}: fetched via yfinance ({len(raw)} bars)", file=sys.stderr)
+                print(f"  [INFO] {sym}: fetched via borsapy ({len(raw)} bars)", file=sys.stderr)
             # Build structured dict for this symbol
             latest = raw[-1] if isinstance(raw[-1], dict) and "close" in raw[-1] else None
         except Exception as e:
             print(f"  [WARN] {sym}: ccxt fetch failed ({e})", file=sys.stderr)
-            # Try yfinance fallback when ccxt raises an exception
+            # Try borsapy fallback when ccxt raises an exception
             try:
-                import yfinance as _yf  # noqa: F811 — local block only
-                hist_yf = _yf.Ticker(sym).history(period="5y")
-                if len(hist_yf) >= 20:
+                from borsapy import Tickers as _bt
+                hist_bp = _bt(sym).history(period="5y", interval="1d")
+                if hist_bp is not None and len(hist_bp) >= 20:
                     raw = []
-                    for _, row in hist_yf.iterrows():
-                        dt_str = row.name.strftime("%Y-%m-%d")
+                    for dt, row in hist_bp.iterrows():
+                        dt_str = pd.Timestamp(dt).strftime("%Y-%m-%d") if isinstance(dt, pd.Timestamp) else str(dt)[:10]
                         o, h, l, c = float(row["Open"]), float(row["High"]), float(row["Low"]), float(row["Close"])
                         if math.isnan(o) or math.isnan(h) or math.isnan(l) or math.isnan(c):
                             continue  # skip incomplete/intraday rows
@@ -102,7 +104,7 @@ def run_full_pipeline(config: dict, output_dir: str, args=None) -> dict:
                             "close": c,
                             "volume": int(row["Volume"]) if not math.isnan(row["Volume"]) else 0,
                         })
-                    print(f"  [INFO] {sym}: fetched via yfinance ({len(raw)} bars)", file=sys.stderr)
+                    print(f"  [INFO] {sym}: fetched via borsapy ({len(raw)} bars)", file=sys.stderr)
                 else:
                     raw = []
             except Exception as e2:
@@ -143,13 +145,13 @@ def run_full_pipeline(config: dict, output_dir: str, args=None) -> dict:
     benchmark_symbol = getattr(args, "benchmark_symbol", None) if args is not None else None
     if benchmark_symbol:
         try:
-            import yfinance as _yf  # noqa: F811 — local block only
-            hist_bench = _yf.Ticker(benchmark_symbol).history(period="5y")
-            if len(hist_bench) >= 20:
+            from borsapy import Tickers as _bt
+            hist_bench = _bt(benchmark_symbol).history(period="5y", interval="1d")
+            if hist_bench is not None and len(hist_bench) >= 20:
                 benchmark_closes = [float(c) for c in hist_bench["Close"] if not math.isnan(c)]
                 print(f"  [INFO] Benchmark {benchmark_symbol}: fetched {len(benchmark_closes)} bars", file=sys.stderr)
             else:
-                print(f"  [WARN] Benchmark {benchmark_symbol}: insufficient data ({len(hist_bench)}) — RS disabled", file=sys.stderr)
+                print(f"  [WARN] Benchmark {benchmark_symbol}: insufficient data — RS disabled", file=sys.stderr)
         except Exception as e:
             print(f"  [WARN] Benchmark fetch failed for {benchmark_symbol} ({e}) — RS disabled", file=sys.stderr)
 
@@ -235,13 +237,13 @@ def run_full_pipeline(config: dict, output_dir: str, args=None) -> dict:
         data = ohlcv_data.get(symbol, {})
         closes_daily = [c["close"] for c in data.get("ohlcv_all", []) if c.get("close")]
 
-        # Fetch weekly data for multi-timeframe verification (via yfinance fallback)
+        # Fetch weekly data for multi-timeframe verification (via borsapy fallback)
         try:
-            import yfinance as _yf  # noqa: F811 — local to this block only
-            hist_wk = _yf.Ticker(symbol).history(period="5y", interval="1wk")
-            closes_weekly = [float(c) for c in hist_wk["Close"] if not math.isnan(c)] if len(hist_wk) > 0 else []
+            from borsapy import Tickers as _bt
+            hist_wk = _bt(symbol).history(period="5y", interval="1d")  # borsapy uses daily; resample to weekly proxy
+            closes_weekly = [float(c) for c in hist_wk["Close"] if not math.isnan(c)] if hist_wk is not None and len(hist_wk) > 0 else []
         except Exception:
-            # If yfinance fails, use daily data as proxy (single-timeframe fallback)
+            # If borsapy fails, use daily data as proxy (single-timeframe fallback)
             closes_weekly = closes_daily
 
         weekly_score = compute_single_tf_score(closes_weekly) if closes_weekly else {"score": 0}
@@ -315,7 +317,7 @@ def run_full_pipeline(config: dict, output_dir: str, args=None) -> dict:
     for pick in selection.get("top_picks", []):
         symbol = pick["symbol"]
         try:
-            # Try ccxt first (same source as live pipeline), fall back to yfinance
+            # Try ccxt first (same source as live pipeline), fall back to borsapy
             hist_raw = None
             try:
                 hist_raw = fetch_bist_data(symbol, timeframe="1d", limit=450)
@@ -323,20 +325,21 @@ def run_full_pipeline(config: dict, output_dir: str, args=None) -> dict:
                 pass  # ccxt fallback below
 
             if not hist_raw or len(hist_raw) < 200:
-                # Fallback to yfinance for BIST symbols (ccxt lacks many Turkish stocks)
-                import yfinance as _yf  # noqa: F811 — local to this block only
+                # Fallback to borsapy for BIST symbols (ccxt lacks many Turkish stocks)
+                from borsapy import Tickers as _bt
 
-                hist_yf = _yf.Ticker(symbol).history(period="5y")
-                if len(hist_yf) < 200:
+                hist_bp = _bt(symbol).history(period="5y", interval="1d")
+                if hist_bp is None or len(hist_bp) < 200:
                     print(f"  [WARN] Backtest: insufficient history for {symbol}", file=sys.stderr)
                     continue
                 bars = []
-                for _, row in hist_yf.iterrows():
+                for dt, row in hist_bp.iterrows():
+                    dt_str = pd.Timestamp(dt).strftime("%Y-%m-%d") if isinstance(dt, pd.Timestamp) else str(dt)[:10]
                     o, h, l, c = float(row["Open"]), float(row["High"]), float(row["Low"]), float(row["Close"])
                     if math.isnan(o) or math.isnan(h) or math.isnan(l) or math.isnan(c):
                         continue  # skip incomplete/intraday rows
                     bars.append({
-                        "date": row.name.strftime("%Y-%m-%d"),
+                        "date": dt_str,
                         "open": o,
                         "high": h,
                         "low": l,
