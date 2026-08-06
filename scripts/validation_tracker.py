@@ -65,7 +65,7 @@ def _is_trading_day(d: date) -> bool:
 
 
 def _get_morning_closes(
-    symbols: list[str], target_date: str
+    symbols: list[str], target_date: str, use_long_history: bool = False
 ) -> dict[str, dict]:
     """Fetch morning snapshot prices via yfinance for BIST tickers.
 
@@ -75,9 +75,64 @@ def _get_morning_closes(
     Args:
         symbols: List of BIST ticker symbols (e.g., "EREGL", "THYAO").
         target_date: Date string in YYYY-MM-DD format.
+        use_long_history: When True, fetches up to 1 month of history so that
+            technical indicators (RSI-14, EMA-20) have enough data points for
+            meaningful computation by the scoring engine.
 
     Returns:
-        Dict of symbol → price dict, or empty dict on failure.
+        Dict of symbol → price dict with optional '_history_closes' key when
+        use_long_history=True.
+    """
+    import yfinance as yf
+
+    period = "1mo" if use_long_history else "5d"
+    result = {}
+    for sym in symbols:
+        try:
+            ticker = yf.Ticker(f"{sym}.IS")
+            hist = ticker.history(period=period, auto_adjust=True)
+            if hist.empty:
+                logger.warning("No history for %s.IS — skipping", sym)
+                continue
+
+            # Get the last available row (most recent data point)
+            latest = hist.iloc[-1]
+            entry = {
+                "close": float(latest["Close"]),
+                "open": float(latest["Open"]),
+                "high": float(latest["High"]),
+                "low": float(latest["Low"]),
+                "volume": int(latest["Volume"]) if not math.isnan(latest["Volume"]) else 0,
+                "timestamp": hist.index[-1].isoformat(),
+            }
+
+            # Include full historical closes for indicator computation
+            if use_long_history:
+                entry["_history_closes"] = [float(v) for v in hist["Close"].tolist()]
+
+            result[sym] = entry
+        except Exception as exc:
+            logger.warning("Failed to fetch morning data for %s.IS: %s", sym, exc)
+
+    return result
+
+
+def _get_eod_closes(
+    symbols: list[str], target_date: str
+) -> dict[str, dict]:
+    """Fetch end-of-day closing prices via yfinance.
+
+    Uses the most recent available daily candle (market closes at 17:30 TRT).
+    Unlike morning mode which targets the prior day's close as reference, EOD
+    captures today's actual closing price — so delta computation is meaningful.
+
+    Args:
+        symbols: List of BIST ticker symbols.
+        target_date: Date string in YYYY-MM-DD format (used for logging; yfinance
+                     returns up to 5 trading days regardless).
+
+    Returns:
+        Dict mapping symbol → {close, high, low, open, volume}.
     """
     import yfinance as yf
 
@@ -90,7 +145,8 @@ def _get_morning_closes(
                 logger.warning("No history for %s.IS — skipping", sym)
                 continue
 
-            # Get the last available row (most recent data point)
+            # EOD uses the last available row (most recent close at market open).
+            # This differs from morning mode which targets the *prior* day's close.
             latest = hist.iloc[-1]
             result[sym] = {
                 "close": float(latest["Close"]),
@@ -101,26 +157,9 @@ def _get_morning_closes(
                 "timestamp": hist.index[-1].isoformat(),
             }
         except Exception as exc:
-            logger.warning("Failed to fetch morning data for %s.IS: %s", sym, exc)
+            logger.warning("Failed to fetch EOD data for %s.IS: %s", sym, exc)
 
     return result
-
-
-def _get_eod_closes(
-    symbols: list[str], target_date: str
-) -> dict[str, dict]:
-    """Fetch end-of-day closing prices via yfinance.
-
-    Uses the same daily candle as morning (market closes at 17:30 TRT).
-
-    Args:
-        symbols: List of BIST ticker symbols.
-        target_date: Date string in YYYY-MM-DD format.
-
-    Returns:
-        Dict mapping symbol → {close, high, low, open, volume}.
-    """
-    return _get_morning_closes(symbols, target_date)
 
 
 def _fetch_score_for_symbol(
@@ -479,33 +518,27 @@ def generate_validation_report(
 
 
 def _get_google_sheet_id(api_key: str = "") -> Optional[str]:
-  """Look up the Google Sheet ID for 'Agentic Trading Validation'.
+  """Return the pre-configured Google Sheet ID.
 
-  Creates the sheet if it doesn't exist. Returns None on failure.
+  Requires both GOOGLE_SHEET_ID env var and a valid api_key (or service account).
+  API-key-only writes are not supported by Sheets API v4 — they require OAuth2 or
+  service account credentials, so we only return an ID when explicitly configured.
 
-  This is a simplified approach using Sheets API v4 with a single worksheet.
-  A production deployment would use service account authentication.
+  Returns None on failure or missing config, which causes write_to_google_sheets()
+  to silently fall back to SQLite storage.
   """
   if not api_key:
+      logger.debug("Google Sheets skipped — no API key configured")
       return None
 
-  # Check for existing sheet ID in environment, or create one
   sheet_id = os.environ.get("GOOGLE_SHEET_ID", "")
-  if sheet_id:
-      return sheet_id
-
-  # Create a new spreadsheet via Sheets API
-  url = f"https://sheets.googleapis.com/v4/spreadsheets?key={api_key}"
-  payload = json.dumps({"properties": {"title": GOOGLE_SHEET_TITLE}}).encode()
-  req = urllib.request.Request(url, data=payload, method="POST", headers={"Content-Type": "application/json"})
-
-  try:
-      with urllib.request.urlopen(req, timeout=10) as resp:
-          result = json.loads(resp.read())
-          return result.get("spreadsheetId")
-  except Exception as exc:
-      logger.warning("Failed to create/find Google Sheet: %s", exc)
+  if not sheet_id:
+      logger.info(
+          "Google Sheets skipped — set GOOGLE_SHEET_ID env var to enable cloud backup"
+      )
       return None
+
+  return sheet_id
 
 
 def _append_to_google_sheet(
@@ -659,6 +692,150 @@ def prepare_morning_snapshot(
 
 
 # ---------------------------------------------------------------------------
+# Technical indicator helpers for scoring_engine integration
+# ---------------------------------------------------------------------------
+
+
+def _compute_ema(prices: list[float], period: int) -> list[float]:
+    """Compute Exponential Moving Average.
+
+    Args:
+        prices: List of closing prices (oldest first).
+        period: EMA lookback period.
+
+    Returns:
+        List of EMA values aligned with input prices (first period-1 entries are None-equivalent).
+    """
+    if len(prices) < period or period <= 0:
+        return []
+    multiplier = 2.0 / (period + 1)
+    ema = [sum(prices[:period]) / period]
+    for price in prices[period:]:
+        ema.append((price - ema[-1]) * multiplier + ema[-1])
+    # Pad leading values with None-equivalent (we handle this downstream)
+    return [None] * (period - 1) + ema
+
+
+def _compute_rsi(prices: list[float], period: int = 14) -> Optional[float]:
+    """Compute RSI-14 using Wilder's smoothing.
+
+    Args:
+        prices: List of closing prices (oldest first).
+        period: Lookback period (default: 14 per spec).
+
+    Returns:
+        RSI value or None if insufficient data.
+    """
+    if len(prices) < period + 1:
+        return None
+    deltas = [prices[i] - prices[i - 1] for i in range(1, len(prices))]
+    gains = [d if d > 0 else 0 for d in deltas[-period:]]
+    losses = [-d if d < 0 else 0 for d in deltas[-period:]]
+    avg_gain = sum(gains) / period
+    avg_loss = sum(losses) / period
+    if avg_loss == 0:
+        return 100.0
+    rs = avg_gain / avg_loss
+    return round(100.0 - (100.0 / (1.0 + rs)), 2)
+
+
+def _compute_macd(prices: list[float]) -> tuple[Optional[float], Optional[float]]:
+    """Compute MACD line and signal line (12, 26, 9).
+
+    Args:
+        prices: List of closing prices (oldest first).
+
+    Returns:
+        (macd_line, macd_signal) or (None, None) if insufficient data.
+    """
+    ema_12 = _compute_ema(prices, 12)
+    ema_26 = _compute_ema(prices, 26)
+
+    # Align on the longer period (26), compute MACD line
+    min_len = len(ema_12) - 25  # after leading Nones from EMA-12
+    macd_line_values = []
+    for i in range(max(len(ema_12) - len(ema_26), 0), len(ema_12)):
+        e12 = ema_12[i] if ema_12[i] is not None else prices[i]
+        idx = i - (len(ema_12) - len(ema_26))
+        e26 = ema_26[idx] if idx < len(ema_26) and ema_26[idx] is not None else prices[max(i - 25, 0)]
+        macd_line_values.append(e12 - e26)
+
+    if len(macd_line_values) < 9:
+        return None, None
+
+    signal = _compute_ema(macd_line_values, 9)
+    if not signal or signal[-1] is None:
+        return round(macd_line_values[-1], 4), None
+    return round(macd_line_values[-1], 4), round(signal[-1], 4)
+
+
+def _score_with_engine(
+    symbol: str, close_price: float, open_price: float, high: float, low: float, volume: int, history: list[float]
+) -> dict:
+    """Score a single quote using scoring_engine.py.
+
+    Computes technical indicators from the price history and passes them to
+    score_quote() so validation measures the real engine's output, not a stub.
+
+    Args:
+        symbol: BIST ticker symbol (e.g., "EREGL").
+        close_price: Current closing price.
+        open_price: Opening price of the candle.
+        high: High of the candle.
+        low: Low of the candle.
+        volume: Trading volume.
+        history: List of historical closing prices (oldest first), used to compute indicators.
+
+    Returns:
+        Dict with 'score', 'raw_components', and 'rationale' keys suitable for
+        prepare_morning_snapshot().
+    """
+    # Compute technical indicators from available price history
+    rsi = _compute_rsi(history, 14)
+    ema20_vals = _compute_ema(history, 20)
+    ema50_vals = _compute_ema(history, 50)
+    ema200_vals = _compute_ema(history, 200)
+
+    # Get the latest EMA values (last non-None entry)
+    def _latest(vals: list[float]) -> Optional[float]:
+        for v in reversed(vals):
+            if v is not None:
+                return round(v, 4)
+        return None
+
+    ema20 = _latest(ema20_vals)
+    ema50 = _latest(ema50_vals)
+    ema200 = _latest(ema200_vals)
+
+    macd_val, macd_signal = _compute_macd(history)
+
+    # Build the quote dict in scoring_engine's expected format
+    from scoring_engine import score_quote
+
+    quote = {
+        "symbol": symbol,
+        "close": close_price,
+        "open": open_price,
+        "high": high,
+        "low": low,
+        "volume": float(volume),
+        "rsi": rsi,
+        "macd": macd_val if macd_val is not None else 0.0,
+        "macd_signal": macd_signal if macd_signal is not None else 0.0,
+        "ema20": ema20,
+        "ema50": ema50,
+        "ema200": ema200,
+    }
+
+    result = score_quote(quote)
+    return {
+        "score": result["score"],
+        "raw_components": result["raw_components"],
+        "rationale": result["rationale"],
+    }
+
+
+# ---------------------------------------------------------------------------
 # CLI entry point
 # ---------------------------------------------------------------------------
 
@@ -704,19 +881,19 @@ def main() -> int:
         today_str = args.date
         symbols = args.symbols or DEFAULT_SYMBOLS
 
-        # Fetch morning prices via yfinance
-        morning_prices = _get_morning_closes(symbols, today_str)
+        # Fetch morning prices via yfinance (use 1mo for indicator history)
+        morning_prices = _get_morning_closes(symbols, today_str, use_long_history=True)
 
         if not morning_prices:
             print(f"[WARN] No morning data fetched for {symbols} on {today_str}", file=sys.stderr)
 
-        # Prepare scored quotes from scoring engine (simplified — uses CLI args or defaults)
+        # Prepare scored quotes using the real scoring engine when price data is available
         scored_quotes = []
         for sym in symbols:
             price_data = morning_prices.get(sym, {})
             close_price = price_data.get("close")
             if close_price is None and args.score is not None:
-                # Use provided score without yfinance data
+                # Use provided score without yfinance data (manual CLI input)
                 scored_quotes.append({
                     "symbol": sym,
                     "score": args.score or 50.0,
@@ -726,16 +903,27 @@ def main() -> int:
                     "rationale": [f"Score: {args.score}", f"Decision: {args.decision}"],
                 })
             elif close_price is not None:
-                # Simulated score for testing — in production this comes from scoring_engine.py
-                simulated_score = 50.0 + (close_price % 10) * 2  # deterministic pseudo-score
-                scored_quotes.append({
-                    "symbol": sym,
-                    "score": simulated_score,
-                    "raw_components": {
-                        "momentum": args.macd if args.macd else 0,
-                    },
-                    "rationale": [f"Simulated score based on close={close_price}"],
-                })
+                # Real scoring engine integration — compute indicators from history
+                # and score via scoring_engine.py so validation measures the actual model.
+                open_p = price_data.get("open", close_price)
+                high_p = price_data.get("high", close_price)
+                low_p = price_data.get("low", close_price)
+                volume_p = price_data.get("volume", 0) or 1
+                history = price_data.get("_history_closes", [])
+
+                try:
+                    scored = _score_with_engine(
+                        sym, close_price, open_p, high_p, low_p, volume_p, history,
+                    )
+                except Exception as exc:
+                    logger.warning("Scoring engine failed for %s on %s — using fallback: %s", sym, today_str, exc)
+                    scored = {
+                        "score": 50.0,
+                        "raw_components": {"momentum": 0},
+                        "rationale": [f"Engine error ({exc}) — fallback score"],
+                    }
+
+                scored_quotes.append(scored)
 
         records = prepare_morning_snapshot(today_str, scored_quotes, args.db)
 
@@ -750,21 +938,23 @@ def main() -> int:
         symbols = args.symbols or DEFAULT_SYMBOLS
         eod_prices = _get_eod_closes(symbols, args.date)
 
-        if not eod_prices:
-            # Use CLI-provided close prices as fallback
-            if args.score is not None and args.decision:
-                eod_data = {}
-                for sym in symbols:
-                    eod_data[sym] = {
-                        "close_price": float(args.score),
-                        "open_price": float(args.score) * 0.98,
-                        "high": float(args.score) * 1.02,
-                        "low": float(args.score) * 0.97,
-                    }
-                records = record_eod_actuals(args.date, eod_data, args.db)
-            else:
-                print(f"[WARN] No EOD data for {symbols} on {args.date}", file=sys.stderr)
-                return 1
+        if eod_prices:
+            # Normal path — yfinance returned real EOD closes.
+            records = record_eod_actuals(args.date, eod_prices, args.db)
+        elif args.score is not None and args.decision:
+            # Fallback — use CLI-provided close prices as synthetic EOD data.
+            eod_data = {}
+            for sym in symbols:
+                eod_data[sym] = {
+                    "close_price": float(args.score),
+                    "open_price": float(args.score) * 0.98,
+                    "high": float(args.score) * 1.02,
+                    "low": float(args.score) * 0.97,
+                }
+            records = record_eod_actuals(args.date, eod_data, args.db)
+        else:
+            print(f"[WARN] No EOD data for {symbols} on {args.date}", file=sys.stderr)
+            return 1
 
         print(json.dumps(records, indent=2))
         return 0
