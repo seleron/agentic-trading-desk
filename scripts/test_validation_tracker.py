@@ -609,3 +609,75 @@ class TestReportSymbolAccuracy(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestMorningEodPriceDifference(unittest.TestCase):
+    """Verify Fix 2: morning and EOD use genuinely different price references.
+
+    Since yf is a local import inside each fetch function, we test at the DB
+    layer — recording morning snapshots with one close price and EOD actuals
+    with another, then verifying delta computation yields non-zero values.
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.db_path = os.path.join(self.tmpdir, "validation.db")
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_morning_eod_different_references_produce_nonzero_delta(self):
+        """Morning uses prior-day close; EOD uses today's close → delta ≠ 0."""
+        # Simulate morning recording with PRIOR day close (50.0)
+        vt.record_morning_score(
+            "2026-07-10",
+            {"EREGL": {"score": 70.0, "close_price": 50.0}},
+            self.db_path,
+        )
+        # Simulate EOD recording with TODAY's close (52.0)
+        records = vt.record_eod_actuals(
+            "2026-07-10",
+            {"EREGL": {"close_price": 52.0, "open_price": 50.5}},
+            self.db_path,
+        )
+
+        self.assertEqual(len(records), 1)
+        # Delta = (52 - 50) / 50 * 100 = 4.0% — genuinely non-zero
+        self.assertAlmostEqual(records[0]["delta_pct"], 4.0, places=2)
+        self.assertTrue(records[0]["prediction_correct"])  # score >= 60 and price up
+
+    def test_morning_eod_price_gap_negative(self):
+        """When EOD close is lower than morning reference → negative delta."""
+        vt.record_morning_score(
+            "2026-07-10",
+            {"EREGL": {"score": 30.0, "close_price": 50.0}},
+            self.db_path,
+        )
+        records = vt.record_eod_actuals(
+            "2026-07-10",
+            {"EREGL": {"close_price": 48.0, "open_price": 49.5}},
+            self.db_path,
+        )
+
+        self.assertEqual(len(records), 1)
+        self.assertAlmostEqual(records[0]["delta_pct"], -4.0, places=2)
+        # score < 60 and price down → CORRECT
+        self.assertTrue(records[0]["prediction_correct"])
+
+    def test_morning_eod_large_spread(self):
+        """Verify delta magnitude is preserved with larger price differences."""
+        vt.record_morning_score(
+            "2026-07-10",
+            {"EREGL": {"score": 85.0, "close_price": 100.0}},
+            self.db_path,
+        )
+        records = vt.record_eod_actuals(
+            "2026-07-10",
+            {"EREGL": {"close_price": 115.0, "open_price": 105.0}},
+            self.db_path,
+        )
+
+        self.assertEqual(len(records), 1)
+        # Delta = (115 - 100) / 100 * 100 = 15.0%
+        self.assertAlmostEqual(records[0]["delta_pct"], 15.0, places=2)

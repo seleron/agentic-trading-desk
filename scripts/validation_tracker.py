@@ -69,8 +69,10 @@ def _get_morning_closes(
 ) -> dict[str, dict]:
     """Fetch morning snapshot prices via yfinance for BIST tickers.
 
-    Returns a dict mapping symbol → {close, high, low, open, volume, timestamp}
-    using the last available daily candle before market open (~10:30 TRT).
+    Uses the **prior trading day's close** as the reference price so that EOD
+    delta computation (close − morning_close) / morning_close yields a genuine
+    intraday movement rather than always zero.  When only one bar is available,
+    falls back to that bar.
 
     Args:
         symbols: List of BIST ticker symbols (e.g., "EREGL", "THYAO").
@@ -81,7 +83,8 @@ def _get_morning_closes(
 
     Returns:
         Dict of symbol → price dict with optional '_history_closes' key when
-        use_long_history=True.
+        use_long_history=True.  The 'close' field is the **prior trading day's**
+        close; all other OHLCV fields come from the same bar for context.
     """
     import yfinance as yf
 
@@ -95,15 +98,20 @@ def _get_morning_closes(
                 logger.warning("No history for %s.IS — skipping", sym)
                 continue
 
-            # Get the last available row (most recent data point)
-            latest = hist.iloc[-1]
+            # Use the *prior* trading day's candle as the morning reference so
+            # that EOD delta (today_close − prior_close) / prior_close is
+            # genuinely non-zero when markets move.  Fall back to the last bar
+            # if there is only one row of data.
+            ref_idx = -2 if len(hist) >= 2 else -1
+            ref = hist.iloc[ref_idx]
+
             entry = {
-                "close": float(latest["Close"]),
-                "open": float(latest["Open"]),
-                "high": float(latest["High"]),
-                "low": float(latest["Low"]),
-                "volume": int(latest["Volume"]) if not math.isnan(latest["Volume"]) else 0,
-                "timestamp": hist.index[-1].isoformat(),
+                "close": float(ref["Close"]),
+                "open": float(ref["Open"]),
+                "high": float(ref["High"]),
+                "low": float(ref["Low"]),
+                "volume": int(ref["Volume"]) if not math.isnan(ref["Volume"]) else 0,
+                "timestamp": hist.index[ref_idx].isoformat(),
             }
 
             # Include full historical closes for indicator computation
@@ -122,9 +130,10 @@ def _get_eod_closes(
 ) -> dict[str, dict]:
     """Fetch end-of-day closing prices via yfinance.
 
-    Uses the most recent available daily candle (market closes at 17:30 TRT).
-    Unlike morning mode which targets the prior day's close as reference, EOD
-    captures today's actual closing price — so delta computation is meaningful.
+    Uses the most recent available daily candle (today's actual close at
+    market close 17:30 TRT).  This is deliberately different from morning mode
+    which uses the prior trading day's close — so delta computation between
+    the two modes is meaningful.
 
     Args:
         symbols: List of BIST ticker symbols.
@@ -145,8 +154,7 @@ def _get_eod_closes(
                 logger.warning("No history for %s.IS — skipping", sym)
                 continue
 
-            # EOD uses the last available row (most recent close at market open).
-            # This differs from morning mode which targets the *prior* day's close.
+            # EOD uses the last available row — today's actual closing price.
             latest = hist.iloc[-1]
             result[sym] = {
                 "close": float(latest["Close"]),
