@@ -9,12 +9,12 @@ Branch: auto/daily-validation-tracker
 Resolves-Backlog: 027-daily-validation-tracker 007-fix-pr9
 
 ## Why
-Claude Opus 4.8 requested changes on PR #9 (round 3).
+Claude Opus 4.8 requested changes on PR #9 (round 4).
 
 ## Required fixes
-- Replace the direct `import yfinance as yf` fetch helpers (_get_morning_closes/_get_eod_closes) with the repo's current BIST provider (borsapy / the unified data provider) so the tracker actually fetches data via the supported path — yfinance may no longer be an installed dependency after commit 145df28.
-- Fix the morning-vs-EOD reference mismatch: both helpers take `hist.iloc[-1]` of a 5d window, so morning_close and eod_close resolve to the same/intraday candle and delta_pct is not a genuine prediction-window return. Morning must capture the reference price and EOD the later actual close so the delta and CORRECT/INCORRECT flags mean what the docstrings claim.
-- Fix or remove the Google Sheets export: `_append_to_google_sheet` uses `values:...:append?key={api_key}` which Sheets API v4 does not permit for writes (as the `_get_google_sheet_id` docstring itself states) — implement service-account/OAuth2 auth or drop the non-functional write path rather than shipping a stub that can never succeed.
+- Revert the metrics/baseline.json change: a standalone validation_tracker.py has no legitimate reason to touch the gate/metrics baseline. If a change is genuinely needed, state why in the PR; otherwise remove it (scope creep / gate-baseline edit).
+- Google Sheets write is non-functional as written: _append_to_google_sheet passes only an API key, but Sheets API v4 append requires OAuth2/service-account auth (your own _get_google_sheet_id docstring admits this), so any real write returns 401. Either implement service-account auth or remove the Sheets integration and its passing-mock tests rather than shipping a stub that always falls back.
+- _get_morning_closes/_get_eod_closes ignore target_date entirely (they always pull period='5d'/'1mo' relative to 'now'), so running --mode morning/eod --date <past date> silently records today's prices under a historical date. Fetch by explicit start/end date range, or hard-guard the script to reject a --date that isn't today so backtest misuse can't corrupt the DB.
 
 ## Acceptance
 - Trusted gate passes: `bash scripts/ci.sh` prints GATE PASSED
