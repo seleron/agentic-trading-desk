@@ -2,13 +2,19 @@
 """
 validation_tracker.py
 =====================
-Daily validation/backtesting tracker for scoring engine accuracy.
+Daily validation tracker for scoring engine accuracy (forward-only).
 
 Tracks morning score predictions against actual end-of-day prices,
 computes deltas, and generates periodic accuracy reports.
 
+Forward-only constraint: All date inputs are hard-guarded to today's date.
+Historical dates raise ValueError — this module cannot backtest past data
+because yfinance does not support absolute date-range queries (only relative
+periods like "5d", "1mo"), so recording prices under a historical date would
+silently store today's values with the wrong date label.
+
 Usage:
-    # Record a morning snapshot
+    # Record a morning snapshot (date must be today)
     python3 scripts/validation_tracker.py --mode morning --date 2026-07-11 \
         --symbol EREGL --score 75 --decision BUY ...
 
@@ -16,9 +22,13 @@ Usage:
     python3 scripts/validation_tracker.py --mode eod --date 2026-07-11 \
         --symbols EREGL ASELS THYAO SISE ANHYT
 
-    # Generate a validation report
+    # Generate a validation report (report CAN cover historical ranges)
     python3 scripts/validation_tracker.py --mode report \
         --start 2026-07-01 --end 2026-07-11
+
+    # Morning snapshot from pipeline output (preferred — avoids re-scoring):
+    python3 scripts/validation_tracker.py --mode morning --date 2026-07-11 \
+        --scores-file outputs/scores.json --symbols EREGL ASELS THYAO SISE ANHYT
 
 Database: SQLite at data/validation.db (local backup).
 """
@@ -31,7 +41,6 @@ import math
 import os
 import sqlite3
 import sys
-import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -195,34 +204,6 @@ def _get_eod_closes(
     return result
 
 
-def _fetch_score_for_symbol(
-    symbol: str, date_str: str, db_path: str
-) -> Optional[dict]:
-    """Load a morning snapshot for *symbol* on *date_str* from SQLite.
-
-    Args:
-        symbol: BIST ticker.
-        date_str: Date in YYYY-MM-DD format.
-        db_path: Path to the validation.db database.
-
-    Returns:
-        Dict with score data, or None if not found.
-    """
-    conn = sqlite3.connect(db_path)
-    cursor = conn.execute(
-        "SELECT * FROM morning_snapshots WHERE date = ? AND symbol = ?",
-        (date_str, symbol),
-    )
-    row = cursor.fetchone()
-    conn.close()
-
-    if row is None:
-        return None
-
-    columns = [desc[0] for desc in cursor.description]
-    return dict(zip(columns, row))
-
-
 # ---------------------------------------------------------------------------
 # SQLite backend
 # ---------------------------------------------------------------------------
@@ -362,10 +343,11 @@ def record_eod_actuals(
     For each symbol, looks up the morning snapshot close price (as reference),
     then computes delta_pct = (eod_close - morning_close) / morning_close * 100.
 
-    Prediction correctness:
-        score >= 60 AND price went up → CORRECT
-        score < 60 AND price went down → CORRECT
-        otherwise → INCORRECT
+    Prediction correctness per engine decision bands:
+        BUY  (score >= 60) → expects UP   → correct if eod_close > morning_close
+        SELL (score < 40)  → expects DOWN → correct if eod_close < morning_close
+        HOLD (40 <= score < 60) → no directionality → recorded with NEUTRAL flag,
+            excluded from prediction-correctness counting.
 
     Args:
         date_str: Date in YYYY-MM-DD format.
@@ -404,16 +386,19 @@ def record_eod_actuals(
 
         delta_pct = round((eod_close - morning_close) / morning_close * 100, 4)
 
-        # Determine prediction correctness
+        # Determine prediction correctness per engine decision bands
         if morning_score is not None and morning_score >= 60:
+            # BUY signal — expects price to go up
             correct = eod_close > morning_close
-        elif morning_score is not None and morning_score < 60:
+            accuracy_flag = "CORRECT" if correct else "INCORRECT"
+        elif morning_score is not None and morning_score < 40:
+            # SELL signal — expects price to go down
             correct = eod_close < morning_close
+            accuracy_flag = "CORRECT" if correct else "INCORRECT"
         else:
-            # No score available — neutral
-            correct = False
-
-        accuracy_flag = "CORRECT" if correct else "INCORRECT"
+            # HOLD (40 <= score < 60) or no score — no directional expectation
+            correct = None  # excluded from prediction-correctness counting
+            accuracy_flag = "NEUTRAL"
 
         try:
             conn.execute(
@@ -490,13 +475,17 @@ def generate_validation_report(
             "message": f"No validation data found for {start_date} to {end_date}.",
         }
 
-    total = len(rows)
-    correct = sum(1 for r in rows if r[5] == 1)
+    # Separate directional predictions from NEUTRAL (HOLD) signals.
+    # NEUTRAL rows have accuracy_flag='NEUTRAL' and are excluded from accuracy stats.
+    directional = [r for r in rows if r[6] != "NEUTRAL"]  # r[6] = accuracy_flag
+
+    total = len(directional)
+    correct = sum(1 for r in directional if r[5] == 1)  # r[5] = prediction_correct
     accuracy_pct = round(correct / max(1, total) * 100, 2)
 
-    # Per-symbol breakdown — single pass through rows
+    # Per-symbol breakdown — single pass through rows (directional only).
     symbol_stats: dict[str, dict[str, Any]] = {}
-    for row in rows:
+    for row in directional:
         sym = row[1]
         if sym not in symbol_stats:
             symbol_stats[sym] = {"total": 0, "correct": 0}
@@ -508,9 +497,9 @@ def generate_validation_report(
         stats = symbol_stats[sym]
         stats["accuracy_pct"] = round(stats["correct"] / max(1, stats["total"]) * 100, 2) if stats["total"] > 0 else 0.0
 
-    # Delta analysis
-    deltas_correct = [r[4] for r in rows if r[5] == 1]
-    deltas_incorrect = [r[4] for r in rows if r[5] == 0]
+    # Delta analysis (directional only).
+    deltas_correct = [r[4] for r in directional if r[5] == 1]
+    deltas_incorrect = [r[4] for r in directional if r[5] == 0]
 
     avg_delta_correct = round(sum(deltas_correct) / len(deltas_correct), 4) if deltas_correct else None
     avg_delta_incorrect = round(sum(deltas_incorrect) / len(deltas_incorrect), 4) if deltas_incorrect else None
@@ -550,20 +539,70 @@ def generate_validation_report(
 # ---------------------------------------------------------------------------
 
 
+def load_scores_from_file(scores_path: str) -> list[dict]:
+    """Load scored quotes from a pipeline output JSON file.
+
+    Reads ``outputs/scores.json`` (or any JSON file with the same format as
+    :func:`scoring_engine.score_quotes` output) and returns the list of scored
+    quote dicts ready for :func:`prepare_morning_snapshot`.
+
+    The expected format is a JSON array where each element has at least::
+
+        {"symbol": ..., "score": ..., "raw_components": {...}, "rationale": [...]}
+
+    Args:
+        scores_path: Path to the scores/selection JSON file.
+
+    Returns:
+        List of scored-quote dicts (each with ``symbol``, ``score``,
+        ``raw_components``, and ``rationale`` keys).
+
+    Raises:
+        FileNotFoundError: If *scores_path* does not exist.
+        ValueError: If the file is not valid JSON or contains an unexpected structure.
+    """
+    import json as _json
+
+    with open(scores_path) as f:
+        data = _json.load(f)
+
+    # The orchestrator writes scores.json as a plain list of scored quotes,
+    # while scoring_engine.py's CLI writes {"scores": [...], "selection": {...}}.
+    if isinstance(data, dict):
+        if "scores" in data:
+            return data["scores"]  # scoring_engine CLI format
+        elif "top_picks" in data:
+            # selection.json — extract top picks as scored quotes
+            picks = data.get("top_picks", [])
+            # Each pick already has symbol/score/raw_components/rationale from select_top_picks
+            return picks
+    if isinstance(data, list):
+        return data
+
+    raise ValueError(f"Unexpected scores file structure (expected list or dict with 'scores'/'top_picks'): {type(data).__name__}")
+
+
 def prepare_morning_snapshot(
     date_str: str,
     scored_quotes: list[dict],
+    close_prices: Optional[dict[str, float]] = None,
     db_path: Optional[str] = None,
 ) -> list[dict]:
     """Convert scoring_engine outputs into validation tracker records.
 
     Takes the output of score_quote() or score_quotes() and converts each
-    result into a morning_snapshot-ready dict.
+    result into a morning_snapshot-ready dict.  If *close_prices* is provided
+    (e.g. from an earlier yfinance fetch), those values are used directly;
+    otherwise :func:`_get_morning_closes` is called as a fallback to obtain
+    current close prices for the symbols.
 
     Args:
         date_str: Date in YYYY-MM-DD format.
         scored_quotes: List of dicts from score_quote()/score_quotes() calls,
-                       each containing 'score', 'raw_components', 'rationale'.
+                       each containing 'symbol', 'score', 'raw_components', 'rationale'.
+        close_prices: Optional dict mapping symbol → close_price to avoid a
+                      redundant yfinance fetch.  When omitted the function
+                      falls back to calling :func:`_get_morning_closes`.
         db_path: Database path (default: DB_PATH constant).
 
     Returns:
@@ -586,21 +625,21 @@ def prepare_morning_snapshot(
             "ema20": None,  # Needs indicator data
             "ema50": None,
             "ema200": None,
-            "close_price": None,  # Set by caller via _get_morning_closes
+            "close_price": close_prices.get(sym) if close_prices else None,
             "rationale": rationale,
         }
 
     records = record_morning_score(date_str, symbols_data, db_path)
 
-    # Update close prices from morning data
-    if records:
+    # If no close prices were provided via parameter, fetch them now (single call).
+    if close_prices is None and records:
         symbol_list = list(symbols_data.keys())
         morning_prices = _get_morning_closes(symbol_list, date_str)
         for sym, price_data in morning_prices.items():
             if sym in symbols_data:
                 symbols_data[sym]["close_price"] = price_data["close"]
 
-        # Re-record with close prices
+        # Re-record with close prices (INSERT OR REPLACE on unique index).
         record_morning_score(date_str, symbols_data, db_path)
 
     return records
@@ -784,6 +823,12 @@ def main() -> int:
         "--end", default=None, help="Report end date (YYYY-MM-DD)."
     )
     ap.add_argument("--db", default=DB_PATH, help="SQLite database path.")
+    ap.add_argument(
+        "--scores-file", default=None,
+        help="Path to pipeline output JSON (outputs/scores.json or selection.json). "
+             "When provided, morning scores are loaded from the file instead of "
+             "being recomputed via yfinance + scoring_engine.",
+    )
 
     args = ap.parse_args()
 
@@ -795,51 +840,68 @@ def main() -> int:
         today_str = args.date
         symbols = args.symbols or DEFAULT_SYMBOLS
 
-        # Fetch morning prices via yfinance (use 1mo for indicator history)
-        morning_prices = _get_morning_closes(symbols, today_str, use_long_history=True)
+        # Load scored quotes — either from pipeline output (preferred) or via yfinance + scoring_engine.
+        if args.scores_file:
+            # Fix #1: ingest actual pipeline output instead of re-scoring.
+            print(f"[INFO] Loading scores from {args.scores_file}", file=sys.stderr)
+            scored_quotes = load_scores_from_file(args.scores_file)
 
-        if not morning_prices:
-            print(f"[WARN] No morning data fetched for {symbols} on {today_str}", file=sys.stderr)
+            # Fetch close prices once (needed for delta computation in EOD).
+            morning_prices = _get_morning_closes(symbols, today_str)
+            close_price_map = {sym: data["close"] for sym, data in morning_prices.items()}
 
-        # Prepare scored quotes using the real scoring engine when price data is available
-        scored_quotes = []
-        for sym in symbols:
-            price_data = morning_prices.get(sym, {})
-            close_price = price_data.get("close")
-            if close_price is None and args.score is not None:
-                # Use provided score without yfinance data (manual CLI input)
-                scored_quotes.append({
-                    "symbol": sym,
-                    "score": args.score or 50.0,
-                    "raw_components": {
-                        "momentum": args.macd if args.macd else 0,
-                    },
-                    "rationale": [f"Score: {args.score}", f"Decision: {args.decision}"],
-                })
-            elif close_price is not None:
-                # Real scoring engine integration — compute indicators from history
-                # and score via scoring_engine.py so validation measures the actual model.
-                open_p = price_data.get("open", close_price)
-                high_p = price_data.get("high", close_price)
-                low_p = price_data.get("low", close_price)
-                volume_p = price_data.get("volume", 0) or 1
-                history = price_data.get("_history_closes", [])
+            records = prepare_morning_snapshot(today_str, scored_quotes, close_prices=close_price_map, db_path=args.db)
 
-                try:
-                    scored = _score_with_engine(
-                        sym, close_price, open_p, high_p, low_p, volume_p, history,
-                    )
-                except Exception as exc:
-                    logger.warning("Scoring engine failed for %s on %s — using fallback: %s", sym, today_str, exc)
-                    scored = {
-                        "score": 50.0,
-                        "raw_components": {"momentum": 0},
-                        "rationale": [f"Engine error ({exc}) — fallback score"],
-                    }
+        else:
+            # Fetch morning prices via yfinance (use 1mo for indicator history).
+            morning_prices = _get_morning_closes(symbols, today_str, use_long_history=True)
 
-                scored_quotes.append(scored)
+            if not morning_prices:
+                print(f"[WARN] No morning data fetched for {symbols} on {today_str}", file=sys.stderr)
 
-        records = prepare_morning_snapshot(today_str, scored_quotes, args.db)
+            # Build scored quotes using the real scoring engine when price data is available.
+            close_price_map = {}
+            scored_quotes = []
+            for sym in symbols:
+                price_data = morning_prices.get(sym, {})
+                close_price = price_data.get("close")
+                if close_price is not None:
+                    close_price_map[sym] = close_price
+
+                if close_price is None and args.score is not None:
+                    # Use provided score without yfinance data (manual CLI input).
+                    scored_quotes.append({
+                        "symbol": sym,
+                        "score": args.score or 50.0,
+                        "raw_components": {
+                            "momentum": args.macd if args.macd else 0,
+                        },
+                        "rationale": [f"Score: {args.score}", f"Decision: {args.decision}"],
+                    })
+                elif close_price is not None:
+                    # Real scoring engine integration — compute indicators from history.
+                    open_p = price_data.get("open", close_price)
+                    high_p = price_data.get("high", close_price)
+                    low_p = price_data.get("low", close_price)
+                    volume_p = price_data.get("volume", 0) or 1
+                    history = price_data.get("_history_closes", [])
+
+                    try:
+                        scored = _score_with_engine(
+                            sym, close_price, open_p, high_p, low_p, volume_p, history,
+                        )
+                    except Exception as exc:
+                        logger.warning("Scoring engine failed for %s on %s — using fallback: %s", sym, today_str, exc)
+                        scored = {
+                            "score": 50.0,
+                            "raw_components": {"momentum": 0},
+                            "rationale": [f"Engine error ({exc}) — fallback score"],
+                        }
+
+                    scored_quotes.append(scored)
+
+            # Fix #4: pass close_prices through to avoid double-fetch in prepare_morning_snapshot.
+            records = prepare_morning_snapshot(today_str, scored_quotes, close_prices=close_price_map if close_price_map else None, db_path=args.db)
 
         print(json.dumps(records, indent=2))
         return 0
