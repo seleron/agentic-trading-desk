@@ -9,12 +9,14 @@ Branch: auto/daily-validation-tracker
 Resolves-Backlog: 027-daily-validation-tracker 007-fix-pr9
 
 ## Why
-Claude Opus 4.8 requested changes on PR #9 (round 4).
+Claude Opus 4.8 requested changes on PR #9 (round 5).
 
 ## Required fixes
-- Revert the metrics/baseline.json change: a standalone validation_tracker.py has no legitimate reason to touch the gate/metrics baseline. If a change is genuinely needed, state why in the PR; otherwise remove it (scope creep / gate-baseline edit).
-- Google Sheets write is non-functional as written: _append_to_google_sheet passes only an API key, but Sheets API v4 append requires OAuth2/service-account auth (your own _get_google_sheet_id docstring admits this), so any real write returns 401. Either implement service-account auth or remove the Sheets integration and its passing-mock tests rather than shipping a stub that always falls back.
-- _get_morning_closes/_get_eod_closes ignore target_date entirely (they always pull period='5d'/'1mo' relative to 'now'), so running --mode morning/eod --date <past date> silently records today's prices under a historical date. Fetch by explicit start/end date range, or hard-guard the script to reject a --date that isn't today so backtest misuse can't corrupt the DB.
+- Have the morning snapshot ingest the actual pipeline output (read outputs/scores.json / selection.json or accept the orchestrator's scored quotes) instead of re-fetching yfinance and re-scoring via hand-rolled indicators — otherwise validation measures a divergent re-implementation, not the real engine.
+- Fix the prediction-correctness semantics in record_eod_actuals to match the engine's real decision bands (BUY≥60 expects up, SELL<40 expects down, HOLD 40–59 should be excluded or graded on a neutral band) rather than a single 60 up/down split that mis-grades every HOLD.
+- Remove or fix dead helper `_fetch_score_for_symbol`: it reads `cursor.description` after `conn.close()`, which is unreliable; it is currently unused.
+- Avoid the double yfinance fetch + double record_morning_score in the morning CLI path → prepare_morning_snapshot (fetch prices once and pass close_price through).
+- Clarify docstring/usage: the today-only hard-guard means this can only accumulate forward from today and cannot 'backtest' historical dates — drop the 'backtesting' framing or state the forward-only constraint.
 
 ## Acceptance
 - Trusted gate passes: `bash scripts/ci.sh` prints GATE PASSED
