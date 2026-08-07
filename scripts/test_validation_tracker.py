@@ -334,8 +334,15 @@ class TestPrepareMorningSnapshot(unittest.TestCase):
         import shutil
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
-    def test_convert_score_output(self):
+    @patch("validation_tracker._get_morning_closes")
+    def test_convert_score_output(self, mock_get_morning):
         """score_quote output should be convertible to morning snapshots."""
+        # Mock _get_morning_closes to bypass the date hard-guard (tests use non-today dates).
+        mock_get_morning.return_value = {
+            "EREGL": {"close": 42.5, "open": 42.0, "high": 43.0, "low": 41.8, "volume": 1_500_000},
+            "THYAO": {"close": 285.0, "open": 280.0, "high": 290.0, "low": 278.0, "volume": 3_200_000},
+        }
+
         scored_quotes = [
             {
                 "symbol": "EREGL",
@@ -376,37 +383,6 @@ class TestIsTradingDay(unittest.TestCase):
         from datetime import date as _date
         self.assertFalse(vt._is_trading_day(_date(2026, 7, 18)))  # Sat
         self.assertFalse(vt._is_trading_day(_date(2026, 7, 19)))  # Sun
-
-
-class TestGoogleSheetsIntegration(unittest.TestCase):
-    """Test Google Sheets write with fallback."""
-
-    def test_write_to_google_sheets_success(self):
-        """When sheet_id and api_key are provided, _append_to_google_sheet should work."""
-        rows = [["Date", "Symbol"], ["2026-07-11", "EREGL"]]
-        mock_resp = MagicMock()
-        mock_resp.status = 200
-
-        with patch("validation_tracker.urllib") as mock_urllib:
-            mock_urllib.request.urlopen.return_value.__enter__ = lambda s: mock_resp
-            mock_urllib.request.urlopen.return_value.__exit__ = lambda s, *a: None
-            result = vt._append_to_google_sheet("fake_sheet_id", rows, "fake_api_key")
-            self.assertTrue(result)
-
-    def test_write_to_google_sheets_failure(self):
-        """When API fails, should return False."""
-        rows = [["Date", "Symbol"]]
-
-        with patch("validation_tracker.urllib") as mock_urllib:
-            mock_urllib.request.urlopen.side_effect = Exception("network error")
-            result = vt._append_to_google_sheet("fake_sheet_id", rows, "fake_api_key")
-            self.assertFalse(result)
-
-    def test_write_to_google_sheets_no_credentials(self):
-        """Without sheet_id or api_key, should return False."""
-        rows = [["Date", "Symbol"]]
-        result = vt._append_to_google_sheet("", rows, "")
-        self.assertFalse(result)
 
 
 class TestConfigurableSymbols(unittest.TestCase):

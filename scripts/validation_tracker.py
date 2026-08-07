@@ -21,7 +21,6 @@ Usage:
         --start 2026-07-01 --end 2026-07-11
 
 Database: SQLite at data/validation.db (local backup).
-Google Sheets: Optional — writes to "Agentic Trading Validation" sheet.
 """
 from __future__ import annotations
 
@@ -33,7 +32,6 @@ import os
 import sqlite3
 import sys
 import time
-import urllib.request
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -47,12 +45,6 @@ logger = logging.getLogger(__name__)
 DEFAULT_SYMBOLS = ["EREGL", "ASELS", "THYAO", "SISE", "ANHYT"]
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "validation.db")
-
-GOOGLE_SHEET_TITLE = "Agentic Trading Validation"
-
-# Google Sheets fallback: use this key if no credentials available.
-# A real deployment would use service account JSON or OAuth2 tokens.
-GOOGLE_SHEETS_API_KEY = os.environ.get("GOOGLE_SHEETS_API_KEY", "")
 
 
 def _is_trading_day(d: date) -> bool:
@@ -76,7 +68,9 @@ def _get_morning_closes(
 
     Args:
         symbols: List of BIST ticker symbols (e.g., "EREGL", "THYAO").
-        target_date: Date string in YYYY-MM-DD format.
+        target_date: Date string in YYYY-MM-DD format — must be today's date,
+            otherwise a ValueError is raised to prevent recording stale prices
+            under a historical date.
         use_long_history: When True, fetches up to 1 month of history so that
             technical indicators (RSI-14, EMA-20) have enough data points for
             meaningful computation by the scoring engine.
@@ -85,7 +79,24 @@ def _get_morning_closes(
         Dict of symbol → price dict with optional '_history_closes' key when
         use_long_history=True.  The 'close' field is the **prior trading day's**
         close; all other OHLCV fields come from the same bar for context.
+
+    Raises:
+        ValueError: If *target_date* is not today's date.
     """
+    # Hard-guard: reject non-today dates to prevent backtest misuse that would
+    # silently record today's prices under a historical date (yfinance only
+    # supports relative period queries, not absolute date ranges).
+    try:
+        requested = datetime.strptime(target_date, "%Y-%m-%d").date()
+    except ValueError:
+        raise ValueError(f"Invalid target_date format: {target_date!r} — expected YYYY-MM-DD")
+    if requested != date.today():
+        raise ValueError(
+            f"target_date must be today ({date.today().isoformat()}), got {requested.isoformat()}. "
+            "yfinance does not support absolute date-range queries, so historical dates would "
+            "silently record today's prices under the wrong date."
+        )
+
     import yfinance as yf
 
     period = "1mo" if use_long_history else "5d"
@@ -137,12 +148,26 @@ def _get_eod_closes(
 
     Args:
         symbols: List of BIST ticker symbols.
-        target_date: Date string in YYYY-MM-DD format (used for logging; yfinance
-                     returns up to 5 trading days regardless).
+        target_date: Date string in YYYY-MM-DD format — must be today's date,
+            otherwise a ValueError is raised (same constraint as _get_morning_closes).
 
     Returns:
         Dict mapping symbol → {close, high, low, open, volume}.
+
+    Raises:
+        ValueError: If *target_date* is not today's date.
     """
+    # Hard-guard: same constraint as _get_morning_closes — reject non-today dates.
+    try:
+        requested = datetime.strptime(target_date, "%Y-%m-%d").date()
+    except ValueError:
+        raise ValueError(f"Invalid target_date format: {target_date!r} — expected YYYY-MM-DD")
+    if requested != date.today():
+        raise ValueError(
+            f"target_date must be today ({date.today().isoformat()}), got {requested.isoformat()}. "
+            "yfinance does not support absolute date-range queries."
+        )
+
     import yfinance as yf
 
     result = {}
@@ -521,124 +546,6 @@ def generate_validation_report(
 
 
 # ---------------------------------------------------------------------------
-# Google Sheets integration (optional)
-# ---------------------------------------------------------------------------
-
-
-def _get_google_sheet_id(api_key: str = "") -> Optional[str]:
-  """Return the pre-configured Google Sheet ID.
-
-  Requires both GOOGLE_SHEET_ID env var and a valid api_key (or service account).
-  API-key-only writes are not supported by Sheets API v4 — they require OAuth2 or
-  service account credentials, so we only return an ID when explicitly configured.
-
-  Returns None on failure or missing config, which causes write_to_google_sheets()
-  to silently fall back to SQLite storage.
-  """
-  if not api_key:
-      logger.debug("Google Sheets skipped — no API key configured")
-      return None
-
-  sheet_id = os.environ.get("GOOGLE_SHEET_ID", "")
-  if not sheet_id:
-      logger.info(
-          "Google Sheets skipped — set GOOGLE_SHEET_ID env var to enable cloud backup"
-      )
-      return None
-
-  return sheet_id
-
-
-def _append_to_google_sheet(
-  sheet_id: str, rows: list[list], api_key: str = ""
-) -> bool:
-  """Append rows to a Google Sheet.
-
-  Args:
-      sheet_id: Google Sheets spreadsheet ID.
-      rows: List of row data (each row is a list of values).
-      api_key: Google API key for authentication.
-
-  Returns:
-      True if successful, False otherwise.
-  """
-  if not sheet_id or not api_key:
-      return False
-
-  url = f"https://sheets.googleapis.com/v4/spreadsheets/{sheet_id}/values:A1:append?valueInputOption=USER_ENTERED&key={api_key}"
-  payload = json.dumps({"values": rows}).encode()
-  req = urllib.request.Request(
-      url, data=payload, method="POST", headers={"Content-Type": "application/json"}
-  )
-
-  try:
-      with urllib.request.urlopen(req, timeout=10) as resp:
-          return resp.status == 200
-  except Exception as exc:
-      logger.warning("Failed to append to Google Sheet: %s", exc)
-      return False
-
-
-def write_to_google_sheets(
-    records: list[dict],
-    mode: str = "morning",
-    api_key: str = "",
-) -> bool:
-    """Write validation records to Google Sheets with SQLite fallback.
-
-    Args:
-        records: List of record dicts from record_morning_score or record_eod_actuals.
-        mode: Either 'morning' or 'eod'.
-        api_key: Google API key (default: GOOGLE_SHEETS_API_KEY env var).
-
-    Returns:
-        True if write succeeded, False otherwise (but data is still in SQLite).
-    """
-    sheet_id = _get_google_sheet_id(api_key)
-    if not sheet_id:
-        logger.info("No Google Sheet available — records stored in SQLite only")
-        return False
-
-    if mode == "morning":
-        header = ["Date", "Symbol", "Score", "Decision", "RSI", "MACD",
-                  "EMA20", "EMA50", "EMA200", "Morning_Close"]
-        rows = []
-        for r in records:
-            rows.append([
-                r.get("date"),
-                r.get("symbol"),
-                r.get("score"),
-                r.get("decision"),
-                r.get("rsi"),
-                r.get("macd"),
-                r.get("ema20"),
-                r.get("ema50"),
-                r.get("ema200"),
-                r.get("close_price"),
-            ])
-    else:  # eod
-        header = ["Date", "Symbol", "Morning_Close", "EOD_Close",
-                  "Delta_Pct", "Prediction_Correct", "Accuracy_Flag"]
-        rows = []
-        for r in records:
-            rows.append([
-                r.get("date"),
-                r.get("symbol"),
-                r.get("morning_close"),
-                r.get("eod_close"),
-                r.get("delta_pct"),
-                r.get("prediction_correct"),
-                r.get("accuracy_flag"),
-            ])
-
-    # Prepend header if first write (check via append)
-    full_rows = [header] + rows if rows else []
-
-    success = _append_to_google_sheet(sheet_id, full_rows, api_key)
-    return success
-
-
-# ---------------------------------------------------------------------------
 # Scoring engine integration: prepare morning snapshot from score_quote output
 # ---------------------------------------------------------------------------
 
@@ -877,7 +784,6 @@ def main() -> int:
         "--end", default=None, help="Report end date (YYYY-MM-DD)."
     )
     ap.add_argument("--db", default=DB_PATH, help="SQLite database path.")
-    ap.add_argument("--api-key", default=GOOGLE_SHEETS_API_KEY, help="Google Sheets API key.")
 
     args = ap.parse_args()
 
