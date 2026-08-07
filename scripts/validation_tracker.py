@@ -122,34 +122,6 @@ def _get_eod_closes(
     return _get_morning_closes(symbols, target_date)
 
 
-def _fetch_score_for_symbol(
-    symbol: str, date_str: str, db_path: str
-) -> Optional[dict]:
-    """Load a morning snapshot for *symbol* on *date_str* from SQLite.
-
-    Args:
-        symbol: BIST ticker.
-        date_str: Date in YYYY-MM-DD format.
-        db_path: Path to the validation.db database.
-
-    Returns:
-        Dict with score data, or None if not found.
-    """
-    conn = sqlite3.connect(db_path)
-    cursor = conn.execute(
-        "SELECT * FROM morning_snapshots WHERE date = ? AND symbol = ?",
-        (date_str, symbol),
-    )
-    row = cursor.fetchone()
-    conn.close()
-
-    if row is None:
-        return None
-
-    columns = [desc[0] for desc in cursor.description]
-    return dict(zip(columns, row))
-
-
 # ---------------------------------------------------------------------------
 # SQLite backend
 # ---------------------------------------------------------------------------
@@ -290,8 +262,9 @@ def record_eod_actuals(
     then computes delta_pct = (eod_close - morning_close) / morning_close * 100.
 
     Prediction correctness:
-        score >= 60 AND price went up → CORRECT
-        score < 60 AND price went down → CORRECT
+        score >= 60 (BUY) AND price went up → CORRECT
+        score < 40 (SELL) AND price went down → CORRECT
+        score 40-59 (HOLD) → NEUTRAL (excluded from accuracy)
         otherwise → INCORRECT
 
     Args:
@@ -332,15 +305,27 @@ def record_eod_actuals(
         delta_pct = round((eod_close - morning_close) / morning_close * 100, 4)
 
         # Determine prediction correctness
+        # Decision bands: BUY >= 60 (expect up), SELL < 40 (expect down), HOLD 40-59 (neutral)
+        is_neutral = False
         if morning_score is not None and morning_score >= 60:
             correct = eod_close > morning_close
-        elif morning_score is not None and morning_score < 60:
+        elif morning_score is not None and morning_score < 40:
             correct = eod_close < morning_close
+        elif morning_score is not None and 40 <= morning_score < 60:
+            # HOLD band — no directional prediction, exclude from accuracy
+            correct = False
+            is_neutral = True
         else:
             # No score available — neutral
             correct = False
+            is_neutral = True
 
-        accuracy_flag = "CORRECT" if correct else "INCORRECT"
+        if is_neutral:
+            accuracy_flag = "NEUTRAL"
+        elif correct:
+            accuracy_flag = "CORRECT"
+        else:
+            accuracy_flag = "INCORRECT"
 
         try:
             conn.execute(
@@ -417,13 +402,15 @@ def generate_validation_report(
             "message": f"No validation data found for {start_date} to {end_date}.",
         }
 
-    total = len(rows)
-    correct = sum(1 for r in rows if r[5] == 1)
+    # Exclude NEUTRAL from accuracy calculation — they have no directional prediction
+    non_neutral_rows = [r for r in rows if r[6] != 'NEUTRAL']
+    total = len(non_neutral_rows)
+    correct = sum(1 for r in non_neutral_rows if r[5] == 1)
     accuracy_pct = round(correct / max(1, total) * 100, 2)
 
-    # Per-symbol breakdown — single pass through rows
+    # Per-symbol breakdown — single pass through rows, excluding NEUTRAL
     symbol_stats: dict[str, dict[str, Any]] = {}
-    for row in rows:
+    for row in non_neutral_rows:
         sym = row[1]
         if sym not in symbol_stats:
             symbol_stats[sym] = {"total": 0, "correct": 0}
@@ -435,9 +422,9 @@ def generate_validation_report(
         stats = symbol_stats[sym]
         stats["accuracy_pct"] = round(stats["correct"] / max(1, stats["total"]) * 100, 2) if stats["total"] > 0 else 0.0
 
-    # Delta analysis
-    deltas_correct = [r[4] for r in rows if r[5] == 1]
-    deltas_incorrect = [r[4] for r in rows if r[5] == 0]
+    # Delta analysis (exclude NEUTRAL — no directional prediction to validate)
+    deltas_correct = [r[4] for r in non_neutral_rows if r[5] == 1]
+    deltas_incorrect = [r[4] for r in non_neutral_rows if r[5] == 0]
 
     avg_delta_correct = round(sum(deltas_correct) / len(deltas_correct), 4) if deltas_correct else None
     avg_delta_incorrect = round(sum(deltas_incorrect) / len(deltas_incorrect), 4) if deltas_incorrect else None

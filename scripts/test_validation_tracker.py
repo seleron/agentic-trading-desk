@@ -178,11 +178,11 @@ class TestRecordEodActuals(unittest.TestCase):
         self.assertEqual(records[0]["accuracy_flag"], "INCORRECT")
         self.assertFalse(records[0]["prediction_correct"])
 
-    def test_delta_negative_with_low_score_correct(self):
-        """Score < 60 and price down → CORRECT."""
+    def test_delta_negative_with_sell_score_correct(self):
+        """Score in SELL band (<40) and price down → CORRECT."""
         vt.record_morning_score(
             "2026-07-11",
-            {"EREGL": {"score": 45.0, "close_price": 42.0}},
+            {"EREGL": {"score": 35.0, "close_price": 42.0}},
             self.db_path,
         )
         records = vt.record_eod_actuals(
@@ -193,8 +193,8 @@ class TestRecordEodActuals(unittest.TestCase):
         self.assertEqual(len(records), 1)
         self.assertEqual(records[0]["accuracy_flag"], "CORRECT")
 
-    def test_delta_positive_with_low_score_incorrect(self):
-        """Score < 60 but price up → INCORRECT."""
+    def test_delta_positive_with_hold_score_neutral(self):
+        """Score in HOLD band (45) but price up → NEUTRAL."""
         vt.record_morning_score(
             "2026-07-11",
             {"EREGL": {"score": 45.0, "close_price": 42.0}},
@@ -206,8 +206,46 @@ class TestRecordEodActuals(unittest.TestCase):
             self.db_path,
         )
         self.assertEqual(len(records), 1)
-        self.assertEqual(records[0]["accuracy_flag"], "INCORRECT")
+        self.assertEqual(records[0]["accuracy_flag"], "NEUTRAL")
 
+
+    def test_hold_band_neutral_excluded_from_accuracy(self):
+        """Score in HOLD band (40-59) should be NEUTRAL, excluded from accuracy."""
+        # Day 1: EREGL BUY correct
+        vt.record_morning_score("2026-07-06", {
+            "EREGL": {"score": 80.0, "close_price": 42.0},
+        }, self.db_path)
+        vt.record_eod_actuals("2026-07-06", {
+            "EREGL": {"close_price": 43.0, "open_price": 42.5},
+        }, self.db_path)
+
+        # Day 1: ASELS HOLD band → NEUTRAL regardless of price movement
+        vt.record_morning_score("2026-07-06", {
+            "ASELS": {"score": 50.0, "close_price": 28.0},
+        }, self.db_path)
+        vt.record_eod_actuals("2026-07-06", {
+            "ASELS": {"close_price": 29.0, "open_price": 28.5},
+        }, self.db_path)
+
+        # Day 2: THYAO SELL correct (price down)
+        vt.record_morning_score("2026-07-07", {
+            "THYAO": {"score": 30.0, "close_price": 150.0},
+        }, self.db_path)
+        vt.record_eod_actuals("2026-07-07", {
+            "THYAO": {"close_price": 148.0, "open_price": 149.0},
+        }, self.db_path)
+
+        report = vt.generate_validation_report("2026-07-06", "2026-07-07", self.db_path)
+
+        # Only 2 non-neutral predictions, both correct → 100% accuracy
+        self.assertEqual(report["total_predictions"], 2)
+        self.assertEqual(report["correct_predictions"], 2)
+        self.assertEqual(report["accuracy_pct"], 100.0)
+
+        # ASELS excluded from per-symbol stats (NEUTRAL)
+        self.assertNotIn("ASELS", report["symbol_accuracy"])
+        self.assertIn("EREGL", report["symbol_accuracy"])
+        self.assertIn("THYAO", report["symbol_accuracy"])
     def test_no_morning_snapshot_skips_eod(self):
         """EOD without a morning snapshot should skip the symbol."""
         records = vt.record_eod_actuals(
@@ -234,8 +272,8 @@ class TestRecordEodActuals(unittest.TestCase):
         self.assertEqual(records[0]["accuracy_flag"], "INCORRECT")
         self.assertAlmostEqual(records[0]["delta_pct"], 0.0, places=3)
 
-    def test_delta_zero_with_low_score_correct(self):
-        """Score < 60 and price exactly flat → INCORRECT (price didn't go down)."""
+    def test_delta_zero_with_hold_score_neutral(self):
+        """Score in HOLD band (45) and price flat → NEUTRAL."""
         vt.record_morning_score(
             "2026-07-11",
             {"EREGL": {"score": 45.0, "close_price": 42.0}},
@@ -247,8 +285,8 @@ class TestRecordEodActuals(unittest.TestCase):
             self.db_path,
         )
         self.assertEqual(len(records), 1)
-        # price went down (42.0 < 42.0 is False) → INCORRECT
-        self.assertEqual(records[0]["accuracy_flag"], "INCORRECT")
+        # Score in HOLD band → NEUTRAL (no directional prediction)
+        self.assertEqual(records[0]["accuracy_flag"], "NEUTRAL")
 
     def test_delta_calculation_precision(self):
         """Delta should be computed correctly with proper precision."""
@@ -546,12 +584,12 @@ class TestEodActualsEdgeCases(unittest.TestCase):
         """Some symbols correct, some incorrect — all should be recorded."""
         vt.record_morning_score("2026-07-11", {
             "EREGL": {"score": 80.0, "close_price": 42.0},
-            "ASELS": {"score": 45.0, "close_price": 28.0},
+            "ASELS": {"score": 30.0, "close_price": 28.0},   # SELL band
         }, self.db_path)
 
         records = vt.record_eod_actuals("2026-07-11", {
             "EREGL": {"close_price": 43.0, "open_price": 42.5},   # up → CORRECT (score >= 60)
-            "ASELS": {"close_price": 29.0, "open_price": 28.5},    # up → INCORRECT (score < 60)
+            "ASELS": {"close_price": 29.0, "open_price": 28.5},    # up → INCORRECT (SELL band expected down)
         }, self.db_path)
 
         self.assertEqual(len(records), 2)
@@ -581,9 +619,9 @@ class TestReportSymbolAccuracy(unittest.TestCase):
             "EREGL": {"close_price": 43.0},
         }, self.db_path)
 
-        # Day 1: ASELS correct prediction (score < 60, price down)
+        # Day 1: ASELS correct prediction (SELL band <40, price down)
         vt.record_morning_score("2026-07-06", {
-            "ASELS": {"score": 50.0, "close_price": 28.0},
+            "ASELS": {"score": 35.0, "close_price": 28.0},
         }, self.db_path)
         vt.record_eod_actuals("2026-07-06", {
             "ASELS": {"close_price": 27.0},
