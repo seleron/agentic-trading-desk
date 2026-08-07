@@ -13,10 +13,15 @@ because yfinance does not support absolute date-range queries (only relative
 periods like "5d", "1mo"), so recording prices under a historical date would
 silently store today's values with the wrong date label.
 
+Preferred usage: Always provide --scores-file pointing to pipeline output
+(outputs/scores.json or selection.json) so validation measures against the
+actual scoring engine's predictions rather than a divergent re-implementation.
+See Fix #1 in PR #9 for details.
+
 Usage:
-    # Record a morning snapshot (date must be today)
+    # Record a morning snapshot from pipeline output (preferred):
     python3 scripts/validation_tracker.py --mode morning --date 2026-07-11 \
-        --symbol EREGL --score 75 --decision BUY ...
+        --scores-file outputs/scores.json --symbols EREGL ASELS THYAO SISE ANHYT
 
     # Record end-of-day actuals
     python3 scripts/validation_tracker.py --mode eod --date 2026-07-11 \
@@ -25,10 +30,6 @@ Usage:
     # Generate a validation report (report CAN cover historical ranges)
     python3 scripts/validation_tracker.py --mode report \
         --start 2026-07-01 --end 2026-07-11
-
-    # Morning snapshot from pipeline output (preferred — avoids re-scoring):
-    python3 scripts/validation_tracker.py --mode morning --date 2026-07-11 \
-        --scores-file outputs/scores.json --symbols EREGL ASELS THYAO SISE ANHYT
 
 Database: SQLite at data/validation.db (local backup).
 """
@@ -346,8 +347,13 @@ def record_eod_actuals(
     Prediction correctness per engine decision bands:
         BUY  (score >= 60) → expects UP   → correct if eod_close > morning_close
         SELL (score < 40)  → expects DOWN → correct if eod_close < morning_close
-        HOLD (40 <= score < 60) → no directionality → recorded with NEUTRAL flag,
-            excluded from prediction-correctness counting.
+        HOLD (40 <= score < 60) → no directionality → accuracy_flag='NEUTRAL',
+            prediction_correct=None — excluded from directional accuracy stats.
+
+    Note: The `prediction_correct` field stores None for NEUTRAL/HOLD signals
+    rather than 0, so they are properly distinguished from incorrect predictions
+    in the database. Accuracy reports filter on accuracy_flag='NEUTRAL' to exclude
+    these from counting (Fix #2).
 
     Args:
         date_str: Date in YYYY-MM-DD format.
@@ -415,7 +421,7 @@ def record_eod_actuals(
                     round(eod_close, 4),
                     data.get("volume"),
                     delta_pct,
-                    1 if correct else 0,
+                    correct,  # None for NEUTRAL (HOLD) — excluded from accuracy via accuracy_flag
                     accuracy_flag,
                 ),
             )
@@ -591,18 +597,17 @@ def prepare_morning_snapshot(
     """Convert scoring_engine outputs into validation tracker records.
 
     Takes the output of score_quote() or score_quotes() and converts each
-    result into a morning_snapshot-ready dict.  If *close_prices* is provided
-    (e.g. from an earlier yfinance fetch), those values are used directly;
-    otherwise :func:`_get_morning_closes` is called as a fallback to obtain
-    current close prices for the symbols.
+    result into a morning_snapshot-ready dict.  Close prices from *close_prices*
+    are used directly — no additional yfinance fetch is performed (Fix #4).
 
     Args:
         date_str: Date in YYYY-MM-DD format.
         scored_quotes: List of dicts from score_quote()/score_quotes() calls,
                        each containing 'symbol', 'score', 'raw_components', 'rationale'.
-        close_prices: Optional dict mapping symbol → close_price to avoid a
-                      redundant yfinance fetch.  When omitted the function
-                      falls back to calling :func:`_get_morning_closes`.
+        close_prices: Dict mapping symbol → close_price (required for meaningful
+                      delta computation).  When omitted, records are created with
+                      null close_price values.  Callers should always provide this
+                      to avoid double-fetches and ensure pipeline-consistent data.
         db_path: Database path (default: DB_PATH constant).
 
     Returns:
@@ -630,18 +635,6 @@ def prepare_morning_snapshot(
         }
 
     records = record_morning_score(date_str, symbols_data, db_path)
-
-    # If no close prices were provided via parameter, fetch them now (single call).
-    if close_prices is None and records:
-        symbol_list = list(symbols_data.keys())
-        morning_prices = _get_morning_closes(symbol_list, date_str)
-        for sym, price_data in morning_prices.items():
-            if sym in symbols_data:
-                symbols_data[sym]["close_price"] = price_data["close"]
-
-        # Re-record with close prices (INSERT OR REPLACE on unique index).
-        record_morning_score(date_str, symbols_data, db_path)
-
     return records
 
 
@@ -853,6 +846,13 @@ def main() -> int:
             records = prepare_morning_snapshot(today_str, scored_quotes, close_prices=close_price_map, db_path=args.db)
 
         else:
+            print(
+                "[WARN] No --scores-file provided — rescoring via hand-rolled "
+                "indicators + scoring_engine. For accurate validation, run the "
+                "orchestrator first and use --scores-file outputs/scores.json.",
+                file=sys.stderr,
+            )
+
             # Fetch morning prices via yfinance (use 1mo for indicator history).
             morning_prices = _get_morning_closes(symbols, today_str, use_long_history=True)
 
