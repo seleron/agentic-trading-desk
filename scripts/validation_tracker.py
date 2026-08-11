@@ -736,7 +736,7 @@ def main() -> int:
     ap.add_argument("--date", "-d", default=None, help="Date (YYYY-MM-DD).")
     ap.add_argument("--symbols", nargs="+", default=None, help="Symbols to process.")
     ap.add_argument(
-        "--score", type=float, default=None, help="Score value (morning mode)."
+        "--score", type=float, default=None, help="Score value required for CLI morning mode; scoring_engine integration is planned but not implemented yet."
     )
     ap.add_argument(
         "--decision", default=None, help='Decision string: BUY/SELL/HOLD.'
