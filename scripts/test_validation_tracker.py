@@ -32,16 +32,14 @@ def _make_mock_yfinance():
     from unittest.mock import MagicMock
     # Mock Tickers class instance
     mock_tickers = MagicMock()
-    mock_hist = MagicMock()
-    # Create a DataFrame-like object with index and iloc
-    mock_hist.index = [pandas.Timestamp("2026-07-10")]
-    mock_hist.iloc = MagicMock(return_value=pandas.Series({
-        "Close": 42.5,
-        "Open": 42.0,
-        "High": 43.0,
-        "Low": 41.8,
-        "Volume": 1_500_000,
-    }))
+    # Use a real DataFrame so iloc subscript works like the real borsapy response
+    mock_hist = pandas.DataFrame({
+        "Close": [42.5],
+        "Open": [42.0],
+        "High": [43.0],
+        "Low": [41.8],
+        "Volume": [1_500_000],
+    }, index=pandas.DatetimeIndex([pandas.Timestamp("2026-07-10")]))
     mock_tickers.history = MagicMock(return_value=mock_hist)
     return mock_tickers
 

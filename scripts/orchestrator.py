@@ -240,8 +240,13 @@ def run_full_pipeline(config: dict, output_dir: str, args=None) -> dict:
         # Fetch weekly data for multi-timeframe verification (via borsapy fallback)
         try:
             from borsapy import Tickers as _bt
-            hist_wk = _bt(symbol).history(period="5y", interval="1d")  # borsapy uses daily; resample to weekly proxy
-            closes_weekly = [float(c) for c in hist_wk["Close"] if not math.isnan(c)] if hist_wk is not None and len(hist_wk) > 0 else []
+            hist_daily = _bt(symbol).history(period="5y", interval="1d")  # borsapy uses daily; resample to weekly
+            if hist_daily is not None and len(hist_daily) > 0:
+                # Resample daily bars to weekly (Friday close) for true multi-timeframe signal
+                weekly_df = hist_daily.resample('W-FRI').last()
+                closes_weekly = [float(c) for c in weekly_df["Close"] if not math.isnan(c)]
+            else:
+                closes_weekly = []
         except Exception:
             # If borsapy fails, use daily data as proxy (single-timeframe fallback)
             closes_weekly = closes_daily

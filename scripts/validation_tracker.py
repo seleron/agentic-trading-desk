@@ -733,7 +733,9 @@ def main() -> int:
         symbols = args.symbols or DEFAULT_SYMBOLS
         eod_prices = _get_eod_closes(symbols, args.date)
 
-        if not eod_prices:
+        if eod_prices:
+            records = record_eod_actuals(args.date, eod_prices, args.db)
+        else:
             # Use CLI-provided close prices as fallback
             if args.score is not None and args.decision:
                 eod_data = {}
