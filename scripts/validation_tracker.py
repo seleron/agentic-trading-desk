@@ -38,6 +38,8 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+import pandas as pd
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -84,7 +86,8 @@ def _get_morning_closes(
     result = {}
     for sym in symbols:
         try:
-            hist_bp = _bt(f"{sym}.IS").history(period="5d", interval="1d")
+            sym_norm = sym if sym.endswith(".IS") else f"{sym}.IS"
+            hist_bp = _bt(sym_norm).history(period="5d", interval="1d")
             if hist_bp is None or len(hist_bp) == 0:
                 logger.warning("No history for %s.IS — skipping", sym)
                 continue
@@ -712,16 +715,10 @@ def main() -> int:
                     "rationale": [f"Score: {args.score}", f"Decision: {args.decision}"],
                 })
             elif close_price is not None:
-                # Simulated score for testing — in production this comes from scoring_engine.py
-                simulated_score = 50.0 + (close_price % 10) * 2  # deterministic pseudo-score
-                scored_quotes.append({
-                    "symbol": sym,
-                    "score": simulated_score,
-                    "raw_components": {
-                        "momentum": args.macd if args.macd else 0,
-                    },
-                    "rationale": [f"Simulated score based on close={close_price}"],
-                })
+                # Real scoring_engine output required — simulated pseudo-score removed
+                print(f"[WARN] Real scoring_engine output required for {sym} — skipping simulated score", file=sys.stderr)
+                # Skip fake scores; user must provide --score or integrate scoring_engine
+                continue
 
         records = prepare_morning_snapshot(today_str, scored_quotes, args.db)
 

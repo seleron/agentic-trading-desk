@@ -27,12 +27,13 @@ import validation_tracker as vt
 
 
 def _make_mock_yfinance():
-    """Create mock yfinance.Ticker that returns fake OHLCV data."""
-    mock_ticker = MagicMock()
+    """Create mock borsapy.Tickers that returns fake OHLCV data."""
+    import pandas
+    from unittest.mock import MagicMock
+    # Mock Tickers class instance
+    mock_tickers = MagicMock()
     mock_hist = MagicMock()
     # Create a DataFrame-like object with index and iloc
-    import pandas
-
     mock_hist.index = [pandas.Timestamp("2026-07-10")]
     mock_hist.iloc = MagicMock(return_value=pandas.Series({
         "Close": 42.5,
@@ -41,8 +42,8 @@ def _make_mock_yfinance():
         "Low": 41.8,
         "Volume": 1_500_000,
     }))
-    mock_ticker.history = MagicMock(return_value=mock_hist)
-    return mock_ticker
+    mock_tickers.history = MagicMock(return_value=mock_hist)
+    return mock_tickers
 
 
 class TestSQLiteInit(unittest.TestCase):
@@ -372,8 +373,14 @@ class TestPrepareMorningSnapshot(unittest.TestCase):
         import shutil
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
-    def test_convert_score_output(self):
+    @patch('validation_tracker._get_morning_closes')
+    def test_convert_score_output(self, mock_get_closes):
         """score_quote output should be convertible to morning snapshots."""
+        # Mock borsapy-backed price fetch to avoid network calls
+        mock_get_closes.return_value = {
+            "EREGL": {"close": 42.5},
+            "THYAO": {"close": 150.0},
+        }
         scored_quotes = [
             {
                 "symbol": "EREGL",
