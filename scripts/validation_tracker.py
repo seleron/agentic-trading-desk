@@ -69,10 +69,11 @@ def _is_trading_day(d: date) -> bool:
 def _get_morning_closes(
     symbols: list[str], target_date: str
 ) -> dict[str, dict]:
-    """Fetch morning snapshot prices via borsapy for BIST tickers.
+    """Fetch morning snapshot prices via yfinance for BIST tickers.
 
     Returns a dict mapping symbol → {close, high, low, open, volume, timestamp}
     using the last available daily candle before market open (~10:30 TRT).
+    Uses yfinance with .IS suffixes as the established BIST path.
 
     Args:
         symbols: List of BIST ticker symbols (e.g., "EREGL", "THYAO").
@@ -82,31 +83,32 @@ def _get_morning_closes(
         Dict of symbol → price dict, or empty dict on failure.
     """
     try:
-        from borsapy import Tickers as _bt
+        import yfinance as yf
     except Exception as exc:
-        logger.warning("borsapy not available for morning closes: %s — degrading gracefully", exc)
+        logger.warning("yfinance not available for morning closes: %s — degrading gracefully", exc)
         return {}
 
     result = {}
     for sym in symbols:
         try:
             sym_norm = sym if sym.endswith(".IS") else f"{sym}.IS"
-            hist_bp = _bt(sym_norm).history(period="5d", interval="1d")
-            if hist_bp is None or len(hist_bp) == 0:
+            ticker = yf.Ticker(sym_norm)
+            hist = ticker.history(period="5d", interval="1d")
+            if hist is None or hist.empty:
                 logger.warning("No history for %s.IS — skipping", sym)
                 continue
 
             # Morning reference = previous trading day close (prior to today's session)
             # Use iloc[-2] if available, else fall back to iloc[-1]
-            ref_idx = -2 if len(hist_bp) >= 2 else -1
-            latest = hist_bp.iloc[ref_idx]
+            ref_idx = -2 if len(hist) >= 2 else -1
+            latest = hist.iloc[ref_idx]
             result[sym] = {
                 "close": float(latest["Close"]),
                 "open": float(latest["Open"]),
                 "high": float(latest["High"]),
                 "low": float(latest["Low"]),
                 "volume": int(latest["Volume"]) if not math.isnan(latest["Volume"]) else 0,
-                "timestamp": pd.Timestamp(hist_bp.index[ref_idx]).isoformat(),
+                "timestamp": pd.Timestamp(hist.index[ref_idx]).isoformat(),
             }
         except Exception as exc:
             logger.warning("Failed to fetch morning data for %s.IS: %s", sym, exc)
@@ -117,9 +119,10 @@ def _get_morning_closes(
 def _get_eod_closes(
     symbols: list[str], target_date: str
 ) -> dict[str, dict]:
-    """Fetch end-of-day closing prices via borsapy.
+    """Fetch end-of-day closing prices via yfinance.
 
     Uses the latest daily candle for the target date as EOD close.
+    Uses yfinance with .IS suffixes as the established BIST path.
 
     Args:
         symbols: List of BIST ticker symbols.
@@ -129,29 +132,30 @@ def _get_eod_closes(
         Dict mapping symbol → {close, high, low, open, volume}.
     """
     try:
-        from borsapy import Tickers as _bt
+        import yfinance as yf
     except Exception as exc:
-        logger.warning("borsapy not available for EOD closes: %s — degrading gracefully", exc)
+        logger.warning("yfinance not available for EOD closes: %s — degrading gracefully", exc)
         return {}
 
     result = {}
     for sym in symbols:
         try:
             sym_norm = sym if sym.endswith(".IS") else f"{sym}.IS"
-            hist_bp = _bt(sym_norm).history(period="5d", interval="1d")
-            if hist_bp is None or len(hist_bp) == 0:
+            ticker = yf.Ticker(sym_norm)
+            hist = ticker.history(period="5d", interval="1d")
+            if hist is None or hist.empty:
                 logger.warning("No history for %s.IS — skipping", sym)
                 continue
 
             # EOD reference = most recent daily candle
-            latest = hist_bp.iloc[-1]
+            latest = hist.iloc[-1]
             result[sym] = {
                 "close": float(latest["Close"]),
                 "open": float(latest["Open"]),
                 "high": float(latest["High"]),
                 "low": float(latest["Low"]),
                 "volume": int(latest["Volume"]) if not math.isnan(latest["Volume"]) else 0,
-                "timestamp": pd.Timestamp(hist_bp.index[-1]).isoformat(),
+                "timestamp": pd.Timestamp(hist.index[-1]).isoformat(),
             }
         except Exception as exc:
             logger.warning("Failed to fetch EOD data for %s.IS: %s", sym, exc)
@@ -678,7 +682,7 @@ def prepare_morning_snapshot(
         db_path: Database path (default: DB_PATH constant).
         close_prices: Dict mapping symbol → close_price. When provided, prices are
                       used directly without a network fetch. When omitted, prices
-                      are fetched via _get_morning_closes (borsapy) if available.
+                      are fetched via _get_morning_closes (yfinance) if available.
 
     Returns:
         List of record dicts suitable for record_morning_score().
@@ -703,7 +707,7 @@ def prepare_morning_snapshot(
             "rationale": rationale,
         }
 
-    # If close prices were not supplied, fetch them once via borsapy
+    # If close prices were not supplied, fetch them once via yfinance
     if close_prices is None:
         symbol_list = list(symbols_data.keys())
         morning_prices = _get_morning_closes(symbol_list, date_str)
@@ -761,7 +765,7 @@ def main() -> int:
         today_str = args.date
         symbols = args.symbols or DEFAULT_SYMBOLS
 
-        # Fetch morning prices via borsapy
+        # Fetch morning prices via yfinance
         morning_prices = _get_morning_closes(symbols, today_str)
 
         if not morning_prices:
@@ -769,26 +773,32 @@ def main() -> int:
 
         # Prepare scored quotes from scoring engine (simplified — uses CLI args or defaults)
         scored_quotes = []
+        close_prices_map = {}
         for sym in symbols:
             price_data = morning_prices.get(sym, {})
             close_price = price_data.get("close")
-            if close_price is None and args.score is not None:
-                # Use provided score without borsapy data
-                scored_quotes.append({
-                    "symbol": sym,
-                    "score": args.score or 50.0,
-                    "raw_components": {
-                        "momentum": args.macd if args.macd else 0,
-                    },
-                    "rationale": [f"Score: {args.score}", f"Decision: {args.decision}"],
-                })
-            elif close_price is not None:
-                # Real scoring_engine output required — simulated pseudo-score removed
-                print(f"[WARN] Real scoring_engine output required for {sym} — skipping simulated score", file=sys.stderr)
-                # Skip fake scores; user must provide --score or integrate scoring_engine
+            close_prices_map[sym] = close_price
+            if close_price is not None:
+                if args.score is not None:
+                    # Use provided score with fetched price data
+                    scored_quotes.append({
+                        "symbol": sym,
+                        "score": args.score,
+                        "raw_components": {
+                            "momentum": args.macd if args.macd else 0,
+                        },
+                        "rationale": [f"Score: {args.score}", f"Decision: {args.decision}"],
+                    })
+                else:
+                    # --score is mandatory for CLI morning mode without scoring_engine integration
+                    print(f"[WARN] --score is mandatory for morning mode; skipping {sym}", file=sys.stderr)
+                    continue
+            else:
+                # No price data fetched for symbol
+                print(f"[WARN] No price data for {sym}; skipping", file=sys.stderr)
                 continue
 
-        records = prepare_morning_snapshot(today_str, scored_quotes, args.db)
+        records = prepare_morning_snapshot(today_str, scored_quotes, args.db, close_prices=close_prices_map)
 
         print(json.dumps(records, indent=2))
         return 0
