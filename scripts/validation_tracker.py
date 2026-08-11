@@ -96,15 +96,17 @@ def _get_morning_closes(
                 logger.warning("No history for %s.IS — skipping", sym)
                 continue
 
-            # Get the last available row (most recent data point)
-            latest = hist_bp.iloc[-1]
+            # Morning reference = previous trading day close (prior to today's session)
+            # Use iloc[-2] if available, else fall back to iloc[-1]
+            ref_idx = -2 if len(hist_bp) >= 2 else -1
+            latest = hist_bp.iloc[ref_idx]
             result[sym] = {
                 "close": float(latest["Close"]),
                 "open": float(latest["Open"]),
                 "high": float(latest["High"]),
                 "low": float(latest["Low"]),
                 "volume": int(latest["Volume"]) if not math.isnan(latest["Volume"]) else 0,
-                "timestamp": pd.Timestamp(hist_bp.index[-1]).isoformat(),
+                "timestamp": pd.Timestamp(hist_bp.index[ref_idx]).isoformat(),
             }
         except Exception as exc:
             logger.warning("Failed to fetch morning data for %s.IS: %s", sym, exc)
@@ -117,7 +119,7 @@ def _get_eod_closes(
 ) -> dict[str, dict]:
     """Fetch end-of-day closing prices via borsapy.
 
-    Uses the same daily candle as morning (market closes at 17:30 TRT).
+    Uses the latest daily candle for the target date as EOD close.
 
     Args:
         symbols: List of BIST ticker symbols.
@@ -126,7 +128,35 @@ def _get_eod_closes(
     Returns:
         Dict mapping symbol → {close, high, low, open, volume}.
     """
-    return _get_morning_closes(symbols, target_date)
+    try:
+        from borsapy import Tickers as _bt
+    except Exception as exc:
+        logger.warning("borsapy not available for EOD closes: %s — degrading gracefully", exc)
+        return {}
+
+    result = {}
+    for sym in symbols:
+        try:
+            sym_norm = sym if sym.endswith(".IS") else f"{sym}.IS"
+            hist_bp = _bt(sym_norm).history(period="5d", interval="1d")
+            if hist_bp is None or len(hist_bp) == 0:
+                logger.warning("No history for %s.IS — skipping", sym)
+                continue
+
+            # EOD reference = most recent daily candle
+            latest = hist_bp.iloc[-1]
+            result[sym] = {
+                "close": float(latest["Close"]),
+                "open": float(latest["Open"]),
+                "high": float(latest["High"]),
+                "low": float(latest["Low"]),
+                "volume": int(latest["Volume"]) if not math.isnan(latest["Volume"]) else 0,
+                "timestamp": pd.Timestamp(hist_bp.index[-1]).isoformat(),
+            }
+        except Exception as exc:
+            logger.warning("Failed to fetch EOD data for %s.IS: %s", sym, exc)
+
+    return result
 
 
 # ---------------------------------------------------------------------------
