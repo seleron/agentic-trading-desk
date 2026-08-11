@@ -313,26 +313,16 @@ def record_eod_actuals(
 
         # Determine prediction correctness
         # Decision bands: BUY >= 60 (expect up), SELL < 40 (expect down), HOLD 40-59 (neutral)
-        is_neutral = False
         if morning_score is not None and morning_score >= 60:
             correct = eod_close > morning_close
+            accuracy_flag = "CORRECT" if correct else "INCORRECT"
         elif morning_score is not None and morning_score < 40:
             correct = eod_close < morning_close
-        elif morning_score is not None and 40 <= morning_score < 60:
-            # HOLD band — no directional prediction, exclude from accuracy
-            correct = False
-            is_neutral = True
+            accuracy_flag = "CORRECT" if correct else "INCORRECT"
         else:
-            # No score available — neutral
-            correct = False
-            is_neutral = True
-
-        if is_neutral:
+            # HOLD band (40-59) or no score — no directional expectation
+            correct = None
             accuracy_flag = "NEUTRAL"
-        elif correct:
-            accuracy_flag = "CORRECT"
-        else:
-            accuracy_flag = "INCORRECT"
 
         try:
             conn.execute(
@@ -349,7 +339,7 @@ def record_eod_actuals(
                     round(eod_close, 4),
                     data.get("volume"),
                     delta_pct,
-                    1 if correct else 0,
+                    correct,
                     accuracy_flag,
                 ),
             )
@@ -357,6 +347,7 @@ def record_eod_actuals(
                 "date": date_str,
                 "symbol": sym,
                 "morning_score": morning_score,
+
                 "morning_close": round(morning_close, 4),
                 "eod_close": round(eod_close, 4),
                 "delta_pct": delta_pct,
@@ -464,6 +455,49 @@ def generate_validation_report(
     }
 
     return report
+
+
+def load_scores_from_file(scores_path: str) -> list[dict]:
+    """Load scored quotes from a pipeline output JSON file.
+
+    Reads ``outputs/scores.json`` (or any JSON file with the same format as
+    :func:`scoring_engine.score_quotes` output) and returns the list of scored
+    quote dicts ready for :func:`prepare_morning_snapshot`.
+
+    The expected format is a JSON array where each element has at least::
+
+        {"symbol": ..., "score": ..., "raw_components": {...}, "rationale": [...]}
+
+    Args:
+        scores_path: Path to the scores/selection JSON file.
+
+    Returns:
+        List of scored-quote dicts (each with ``symbol``, ``score``,
+        ``raw_components``, and ``rationale`` keys).
+
+    Raises:
+        FileNotFoundError: If *scores_path* does not exist.
+        ValueError: If the file is not valid JSON or contains an unexpected structure.
+    """
+    import json as _json
+
+    with open(scores_path) as f:
+        data = _json.load(f)
+
+    # The orchestrator writes scores.json as a plain list of scored quotes,
+    # while scoring_engine.py's CLI writes {"scores": [...], "selection": {...}}.
+    if isinstance(data, dict):
+        if "scores" in data:
+            return data["scores"]  # scoring_engine CLI format
+        elif "top_picks" in data:
+            # selection.json — extract top picks as scored quotes
+            picks = data.get("top_picks", [])
+            # Each pick already has symbol/score/raw_components/rationale from select_top_picks
+            return picks
+    if isinstance(data, list):
+        return data
+
+    raise ValueError(f"Unexpected scores file structure (expected list or dict with 'scores'/'top_picks'): {type(data).__name__}")
 
 
 # ---------------------------------------------------------------------------
@@ -599,17 +633,22 @@ def prepare_morning_snapshot(
     date_str: str,
     scored_quotes: list[dict],
     db_path: Optional[str] = None,
+    close_prices: Optional[dict[str, float]] = None,
 ) -> list[dict]:
     """Convert scoring_engine outputs into validation tracker records.
 
     Takes the output of score_quote() or score_quotes() and converts each
-    result into a morning_snapshot-ready dict.
+    result into a morning_snapshot-ready dict. Close prices from *close_prices*
+    are used directly — no additional fetch is performed (Fix #4).
 
     Args:
         date_str: Date in YYYY-MM-DD format.
         scored_quotes: List of dicts from score_quote()/score_quotes() calls,
                        each containing 'score', 'raw_components', 'rationale'.
         db_path: Database path (default: DB_PATH constant).
+        close_prices: Dict mapping symbol → close_price. When provided, prices are
+                      used directly without a network fetch. When omitted, prices
+                      are fetched via _get_morning_closes (borsapy) if available.
 
     Returns:
         List of record dicts suitable for record_morning_score().
@@ -620,34 +659,29 @@ def prepare_morning_snapshot(
         raw = sq.get("raw_components", {})
         rationale = sq.get("rationale", [])
 
-        # Extract key indicators from the scoring result
         decision = "BUY" if sq.get("score", 0) >= 60 else ("SELL" if sq.get("score", 0) < 40 else "HOLD")
 
         symbols_data[sym] = {
             "score": sq.get("score"),
             "decision": decision,
-            "rsi": None,  # Would need to be passed through from indicators
+            "rsi": None,
             "macd": raw.get("momentum", 0),
-            "ema20": None,  # Needs indicator data
+            "ema20": None,
             "ema50": None,
             "ema200": None,
-            "close_price": None,  # Set by caller via _get_morning_closes
+            "close_price": close_prices.get(sym) if close_prices else None,
             "rationale": rationale,
         }
 
-    records = record_morning_score(date_str, symbols_data, db_path)
-
-    # Update close prices from morning data
-    if records:
+    # If close prices were not supplied, fetch them once via borsapy
+    if close_prices is None:
         symbol_list = list(symbols_data.keys())
         morning_prices = _get_morning_closes(symbol_list, date_str)
         for sym, price_data in morning_prices.items():
-            if sym in symbols_data:
+            if sym in symbols_data and price_data.get("close") is not None:
                 symbols_data[sym]["close_price"] = price_data["close"]
 
-        # Re-record with close prices
-        record_morning_score(date_str, symbols_data, db_path)
-
+    records = record_morning_score(date_str, symbols_data, db_path)
     return records
 
 
