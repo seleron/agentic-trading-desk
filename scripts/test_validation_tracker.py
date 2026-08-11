@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import validation_tracker as vt
 
 
-def _make_mock_yfinance():
+def _make_mock_borsapy():
     """Create mock borsapy.Tickers that returns fake OHLCV data."""
     import pandas
     from unittest.mock import MagicMock

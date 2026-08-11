@@ -81,7 +81,11 @@ def _get_morning_closes(
     Returns:
         Dict of symbol → price dict, or empty dict on failure.
     """
-    from borsapy import Tickers as _bt
+    try:
+        from borsapy import Tickers as _bt
+    except Exception as exc:
+        logger.warning("borsapy not available for morning closes: %s — degrading gracefully", exc)
+        return {}
 
     result = {}
     for sym in symbols:
@@ -693,7 +697,7 @@ def main() -> int:
         today_str = args.date
         symbols = args.symbols or DEFAULT_SYMBOLS
 
-        # Fetch morning prices via yfinance
+        # Fetch morning prices via borsapy
         morning_prices = _get_morning_closes(symbols, today_str)
 
         if not morning_prices:
@@ -705,7 +709,7 @@ def main() -> int:
             price_data = morning_prices.get(sym, {})
             close_price = price_data.get("close")
             if close_price is None and args.score is not None:
-                # Use provided score without yfinance data
+                # Use provided score without borsapy data
                 scored_quotes.append({
                     "symbol": sym,
                     "score": args.score or 50.0,
