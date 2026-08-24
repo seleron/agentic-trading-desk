@@ -1,6 +1,6 @@
 {
-  "minTests": 194,
-  "timestamp": "2026-07-07T23:00:00Z",
+  "minTests": 197,
+  "timestamp": "2026-08-23T11:27:00Z",
   "branch": "feature/intraday-scanner",
   "tests": {
     "total": 109,
@@ -14,21 +14,19 @@
     "scripts.test_scoring_engine"
   ],
   "changes": {
-    "description": "Added intraday scanner loop mode with decision-change detection (backlog #003)",
-    "new_tests_added": 13,
-    "tests_fixed": 1,
+    "description": "Reconcile closed-not-merged auto/* PRs so a dead PR's review-fix item is removed (fixes phantom-item loop: 008-fix-pr10 / closed PR #10 shipped via merged PR #9)",
+    "new_tests_added": 3,
+    "tests_fixed": 0,
     "modules_modified": [
-      "orchestrator.py",
-      "config.yaml"
+      "scripts/hermes/backlog-reconcile.sh"
     ],
     "test_files_modified": [
-      "test_pipeline.py",
-      "test_notification_router.py"
+      "test_backlog_reconcile_closed.py (new)"
     ]
   },
   "baseline": {
-    "previous_total": 96,
-    "new_total": 109,
-    "delta": "+13"
+    "previous_total": 194,
+    "new_total": 197,
+    "delta": "+3"
   }
 }

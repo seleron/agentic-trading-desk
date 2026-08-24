@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
 #
-# backlog-reconcile.sh [pr-number] — remove backlog items resolved by merged PRs.
+# backlog-reconcile.sh [pr-number] — remove backlog items resolved by finished PRs.
 #
-#   no arg     : scan recently MERGED auto/* PRs into the base branch and
-#                reconcile any not done yet (catches human merges too).
+#   no arg     : scan recently MERGED AND CLOSED auto/* PRs into the base branch
+#                and reconcile any not done yet. Merged PRs ship their item the
+#                usual way; a CLOSED (never merged) PR still removes the
+#                review-fix item that names it (PR: #N) so a dead PR's fix item
+#                can't become a phantom the loop re-selects forever.
 #   pr-number  : reconcile just that (already-merged) PR (used right after an
-#                auto-merge for promptness).
+#                auto-merge for promptness). Still requires MERGED — a bare
+#                `pr-number` arg is a targeted merge-follow-up, not a sweep.
 #
 # An item is resolved by PR #N when either:
 #   - PR #N's body has a `Resolves-Backlog: <stems/numbers>` marker, or
@@ -23,7 +27,7 @@ cd "$ROOT"
 source "$ROOT/scripts/hermes/lib-loop.sh"
 BASE="${LOOP_BASE_BRANCH:-autonomous/scaffolding}"
 REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || echo seleron/agentic-trading-desk)"
-STATE="$HOME/.hermes/agentic-trading-reconciled-prs.txt"; touch "$STATE"
+STATE="$HOME/.hermes/agentic-trading-reconciled-prs.txt"; mkdir -p "$(dirname "$STATE")" 2>/dev/null || true; touch "$STATE"
 DRY="${DRY_RUN:-0}"
 # Only mutate files when the checkout is actually on the base branch — otherwise a
 # reconcile triggered from a feature-branch checkout (loop-context / health-watch
@@ -63,7 +67,7 @@ resolve_items_for_pr() {  # echoes backlog file paths resolved by PR $1
   done
 }
 
-reconcile_pr() {  # $1 = merged PR number
+reconcile_pr() {  # $1 = merged OR closed-not-merged PR number
   local num="$1" items f
   items="$(resolve_items_for_pr "$num" | sort -u | grep -v '^$' || true)"
   if [ -z "$items" ]; then echo "  PR #$num: no backlog items to remove" >&2; return; fi
@@ -71,7 +75,7 @@ reconcile_pr() {  # $1 = merged PR number
     [ -z "$f" ] && continue
     if [ "$DRY" = "1" ]; then echo "  [dry] would remove $f (PR #$num)" >&2
     elif [ "$ON_BASE" != "1" ]; then echo "  [skip] $f resolved by PR #$num but checkout is not on $BASE — deferring removal" >&2
-    else git rm -q "$f" 2>/dev/null || rm -f "$f"; echo "  removed $f (PR #$num merged)" >&2; fi
+    else git rm -q "$f" 2>/dev/null || rm -f "$f"; echo "  removed $f (PR #$num reconciled)" >&2; fi
   done <<< "$items"
   echo "PR #$num → resolved $(echo "$items" | tr '\n' ' ')"
 }
@@ -81,9 +85,18 @@ if [ -n "${1:-}" ]; then
   ST="$(gh pr view "$1" --json state --jq .state 2>/dev/null || echo '')"
   if [ "$ST" = "MERGED" ]; then reconcile_pr "$1"; else echo "PR #$1 is ${ST:-unknown} — nothing to reconcile" >&2; fi
 else
+  # Reconcile BOTH merged and closed-not-merged auto/* PRs. Merged PRs ship their
+  # item the usual way; a CLOSED (never merged) PR still resolves the review-fix
+  # item that names it — that item's PR is finished (abandoned, or its changes
+  # shipped via a superseding merged PR), so leaving it open would make the
+  # implementer "update" a dead PR branch forever (the phantom-item loop).
+  # CLOSED is intentionally included; OPEN is NOT (an in-flight PR's fix item must
+  # survive until that PR actually lands).
+  mapfile -t PRS < <(gh pr list --repo "$REPO" --state closed --base "$BASE" --limit 30 \
+    --json number,headRefName --jq '.[]|select(.headRefName|startswith("auto/"))|.number' 2>/dev/null || true)
   mapfile -t MERGED < <(gh pr list --repo "$REPO" --state merged --base "$BASE" --limit 30 \
     --json number,headRefName --jq '.[]|select(.headRefName|startswith("auto/"))|.number' 2>/dev/null || true)
-  for num in "${MERGED[@]}"; do
+  for num in "${PRS[@]}" "${MERGED[@]}"; do
     [ -z "$num" ] && continue
     grep -qx "$num" "$STATE" && continue
     reconcile_pr "$num"
