@@ -4,3 +4,6 @@ data/
 outputs/
 # Host-specific Hermes loop config (delivery targets, chat ids) — never commit.
 scripts/hermes/loop.env
+us_watchlist_results.json
+
+# Generated watchlist scan output (script artifact, not source).
