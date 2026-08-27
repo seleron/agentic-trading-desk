@@ -1,17 +1,11 @@
 #!/usr/bin/env python3
 """Ad-hoc BIST watchlist scan via the desk's real scoring_engine + indicators.
 
-Data: borsapy (BIST). Benchmark for relative strength: THYAO.IS.
+Data: yfinance with the .IS suffix (BIST), matching the repo's established
+provider. Benchmark for relative strength: THYAO.IS.
 Usage: python3 watchlist_scan.py
 """
-import os
-import sys
-import json
-import math
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "scripts"))
-
-from borsapy import Tickers
+from yfinance import Ticker
 from scoring_engine import score_quote
 from indicators import compute
 
@@ -24,8 +18,7 @@ RS_THRESHOLD = 0.05  # matches config.yaml scoring.rs_threshold
 
 
 def fetch(ticker: str):
-    tk = Tickers(ticker)
-    df = tk.history(period="2y", interval="1d")
+    df = Ticker(f"{ticker}.IS").history(period="2y", interval="1d", auto_adjust=True)
     if df is None or len(df) < 50:
         return None
     rows = df.reset_index()
@@ -115,7 +108,6 @@ def main():
                 "rs_dir": d1.get("direction", 0),
                 "stock_ret_20d": round(d1.get("stock_return_pct", 0) * 100, 2),
                 "bench_ret_20d": round(d1.get("benchmark_return_pct", 0) * 100, 2),
-                "rsi": round(sc.get("raw_components", {}).get("momentum") is not None and (q["rsi"] or 0), 1),
                 "rsi_val": round(q["rsi"], 1) if q["rsi"] is not None else None,
                 "ema200_up": (q["close"] > q["ema200"]) if q["ema200"] else None,
                 "penalties": sc["penalties_applied"],

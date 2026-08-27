@@ -4,14 +4,15 @@ unified_data_provider.py
 ========================
 Unified data provider for the Agentic Trading Desk.
 
-Routes requests to Finnhub (US stocks) or Borsapy (BIST stocks).
+Routes requests to Finnhub (US stocks, yfinance fallback) or yfinance (BIST
+stocks, .IS suffix).
 Normalizes all output into a standard OHLCV format expected by scoring_engine.py:
   [ { "date": "YYYY-MM-DD", "open": float, ... }, ... ]
 
 Usage:
     from unified_data_provider import fetch_stock_data
     data = fetch_stock_data("AAPL", days=730)        # US Stock -> Finnhub (fallback yfinance)
-    data = fetch_stock_data("EREGL.IS", days=730)   # BIST Stock -> Borsapy
+    data = fetch_stock_data("EREGL.IS", days=730)   # BIST Stock -> yfinance (.IS)
 """
 
 from __future__ import annotations
@@ -31,18 +32,11 @@ try:
 except ImportError:
     pass
 
-import pandas as pd
-
 # Try importing optional dependencies
 try:
     import finnhub
 except ImportError:
     finnhub = None
-
-try:
-    from borsapy import Tickers as _bt
-except ImportError:
-    _bt = None
 
 try:
     import yfinance as _yf
@@ -68,8 +62,10 @@ def fetch_stock_data(symbol: str, days: int = 730) -> Optional[list[dict]]:
     is_bist = symbol_upper.endswith(".IS")
 
     try:
-        if is_bist and _bt:
-            return _fetch_borsapy(symbol, days)
+        if is_bist:
+            # BIST routes through yfinance with the .IS suffix (borsapy was
+            # removed as non-working; yfinance is the repo's established provider).
+            return _fetch_yfinance_bist(symbol_upper, days)
         elif not is_bist and finnhub:
             data = _fetch_finnhub(symbol_upper, days)
             # Graceful fallback to mock data for testing when API key is missing/invalid
@@ -78,10 +74,10 @@ def fetch_stock_data(symbol: str, days: int = 730) -> Optional[list[dict]]:
                 return get_mock_data(symbol_upper, days)
             return data
         else:
-            print(f"[WARN] No provider available for {symbol} (BIST={is_bist})", file=__import__('sys').stderr)
+            print(f"[WARN] No provider available for {symbol} (BIST={is_bist})", file=sys.stderr)
             return None
     except Exception as e:
-        print(f"[ERROR] Failed to fetch data for {symbol}: {e}", file=__import__('sys').stderr)
+        print(f"[ERROR] Failed to fetch data for {symbol}: {e}", file=sys.stderr)
         return None
 
 
@@ -156,46 +152,50 @@ def _fetch_finnhub(symbol: str, days: int = 730) -> Optional[list[dict]]:
             return bars[-days:] if len(bars) > days else bars
         
         except Exception as e:
-            print(f"[WARN] yfinance fallback failed for {symbol}: {e}", file=__import__('sys').stderr)
+            print(f"[WARN] yfinance fallback failed for {symbol}: {e}", file=sys.stderr)
     
     return None
 
 
-def _fetch_borsapy(symbol: str, days: int = 730) -> Optional[list[dict]]:
-    """Fetch BIST stock data via Borsapy."""
-    if not _bt:
-        print(f"[WARN] borsapy not installed. Skipping {symbol}.", file=__import__('sys').stderr)
+def _fetch_yfinance_bist(symbol: str, days: int = 730) -> Optional[list[dict]]:
+    """Fetch BIST stock data via yfinance using the .IS suffix.
+
+    Replaces the retired borsapy path — yfinance is the repo's established
+    provider for BIST tickers (see us_watchlist_scan.py / watchlist_scan.py).
+    """
+    if not _yf:
+        print(f"[WARN] yfinance not installed. Cannot fetch {symbol}.", file=sys.stderr)
         return None
 
     try:
-        hist_bp = _bt(symbol).history(period="5y", interval="1d")
-        
-        if hist_bp is None or len(hist_bp) < 20:
+        hist = _yf.Ticker(symbol).history(period=f"{days + 60}d", interval="1d", auto_adjust=True)
+
+        if hist is None or hist.empty or len(hist) < 20:
             return None
 
         bars = []
-        for dt, row in hist_bp.iterrows():
-            # Borsapy returns pd.Timestamps for index usually
-            date_str = pd.Timestamp(dt).strftime("%Y-%m-%d") if hasattr(pd, 'Timestamp') else str(dt)[:10]
-            
+        for dt, row in hist.iterrows():
+            date_str = dt.strftime("%Y-%m-%d")
+
             o, h, l, c = float(row["Open"]), float(row["High"]), float(row["Low"]), float(row["Close"])
-            
+
             if math.isnan(o) or math.isnan(h) or math.isnan(l) or math.isnan(c):
                 continue
-                
+
             bars.append({
                 "date": date_str,
-                "open": o,
-                "high": h,
-                "low": l,
-                "close": c,
-                "volume": int(row["Volume"]) if not math.isnan(row.get("Volume", 0)) else 0,
+                "open": round(o, 4),
+                "high": round(h, 4),
+                "low": round(l, 4),
+                "close": round(c, 4),
+                "volume": int(row["Volume"]) if not math.isnan(row["Volume"]) else 0,
             })
 
-        return bars[-days:]
+        bars.sort(key=lambda x: x["date"])
+        return bars[-days:] if len(bars) > days else bars
 
     except Exception as e:
-        print(f"[WARN] Borsapy fetch failed for {symbol}: {e}", file=__import__('sys').stderr)
+        print(f"[WARN] yfinance BIST fetch failed for {symbol}: {e}", file=sys.stderr)
         return None
 
 
@@ -226,7 +226,7 @@ def get_mock_data(symbol: str, count: int = 200) -> Optional[list[dict]]:
 if __name__ == "__main__":
     print("Testing Unified Data Provider...")
     
-    # Test BIST (requires borsapy)
+    # Test BIST (yfinance .IS)
     print("\n--- Testing BIST: EREGL.IS ---")
     bist_data = fetch_stock_data("EREGL.IS", days=100)
     if bist_data:

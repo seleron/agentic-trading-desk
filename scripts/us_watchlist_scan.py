@@ -4,11 +4,8 @@
 Data: yfinance (no .IS suffix -> US ticker). Benchmark for relative strength: ^GSPC.
 Usage: python3 us_watchlist_scan.py [TICKER ...]
 """
-import os
 import sys
 import json
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "scripts"))
 
 import yfinance as yf
 from scoring_engine import score_quote
@@ -24,8 +21,6 @@ def fetch(ticker: str):
                      progress=False, auto_adjust=True)
     if df is None or len(df) < 50:
         return None
-    if isinstance(df.columns, pd.MultiIndex if False else type(df.columns)):
-        pass
     # Flatten multiindex columns if present
     if hasattr(df.columns, "droplevel"):
         try:

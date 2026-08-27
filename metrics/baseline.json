@@ -1,32 +1,35 @@
 {
-  "minTests": 197,
-  "timestamp": "2026-08-23T11:27:00Z",
-  "branch": "feature/intraday-scanner",
+  "minTests": 207,
+  "timestamp": "2026-08-27T02:00:00Z",
+  "branch": "auto/watchlist-scripts",
   "tests": {
-    "total": 109,
-    "passed": 109,
+    "total": 207,
+    "passed": 207,
     "failed": 0,
     "duration_seconds": 1.285
   },
   "test_suites": [
     "scripts.test_pipeline",
     "scripts.test_data_quality",
-    "scripts.test_scoring_engine"
+    "scripts.test_scoring_engine",
+    "scripts.test_unified_data_provider"
   ],
   "changes": {
-    "description": "Reconcile closed-not-merged auto/* PRs so a dead PR's review-fix item is removed (fixes phantom-item loop: 008-fix-pr10 / closed PR #10 shipped via merged PR #9)",
-    "new_tests_added": 3,
+    "description": "Address Claude round-2 review on PR #14: drop borsapy, route BIST through yfinance .IS, fix dead/buggy lines. Adds test_unified_data_provider (8 offline tests) locking in the .IS->yfinance routing.",
+    "new_tests_added": 10,
     "tests_fixed": 0,
     "modules_modified": [
-      "scripts/hermes/backlog-reconcile.sh"
+      "scripts/watchlist_scan.py",
+      "scripts/us_watchlist_scan.py",
+      "scripts/unified_data_provider.py"
     ],
     "test_files_modified": [
-      "test_backlog_reconcile_closed.py (new)"
+      "scripts/test_unified_data_provider.py (new)"
     ]
   },
   "baseline": {
-    "previous_total": 194,
-    "new_total": 197,
-    "delta": "+3"
+    "previous_total": 197,
+    "new_total": 207,
+    "delta": "+10"
   }
 }
