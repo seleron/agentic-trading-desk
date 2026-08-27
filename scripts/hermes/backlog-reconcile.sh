@@ -49,10 +49,15 @@ resolve_items_for_pr() {  # echoes backlog file paths resolved by PR $1
   body="$(gh pr view "$num" --json body --jq .body 2>/dev/null || true)"
   marker="$(printf '%s' "$body" | grep -ioE 'Resolves-Backlog:.*' | sed -E 's/^[^:]*://' || true)"
   # marker stems/numbers → files
+  # Anchor the token to the filename PREFIX (items are `NNN-<slug>.md`). A
+  # substring match (backlog/*TOK*.md) can delete an item a PR never shipped:
+  # e.g. a marker token "004" would glob-match `backlog/004-*.md` AND any file
+  # merely containing "004" elsewhere, and prose mentioning a number in the
+  # body would sweep unrelated items. Exact-prefix match avoids both.
   for tok in $(printf '%s' "$marker" | tr ',' ' '); do
     tok="$(printf '%s' "$tok" | tr -cd 'A-Za-z0-9-')"
     [ -z "$tok" ] && continue
-    for f in backlog/*"$tok"*.md; do [ -e "$f" ] && echo "$f"; done
+    for f in backlog/"$tok"*.md; do [ -e "$f" ] && echo "$f"; done
   done
   # review-fix items that name this PR
   for f in backlog/[0-9]*.md; do
