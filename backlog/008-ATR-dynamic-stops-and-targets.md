@@ -1,6 +1,6 @@
 ---
-rank: 8
-title: ATR-based-dynamic-stops-and-targets
+rank: 2
+title: ATR-based dynamic stops and targets
 area: risk_management
 depends_on: []
 ---
