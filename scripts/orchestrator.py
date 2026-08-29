@@ -279,6 +279,8 @@ def run_full_pipeline(config: dict, output_dir: str, args=None) -> dict:
                 "rationale": "; ".join(pick.get("rationale", [])),
             },
             indicators=ohlcv_data[symbol].get("indicators", {}),
+            # stop_loss_method / stop_atr_multiplier come from config.yaml (#008).
+            config=config,
         )
         trade_plans.append(plan)
 
