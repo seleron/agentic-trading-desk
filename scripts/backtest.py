@@ -282,6 +282,15 @@ def run_backtest(
                 w_macro * macro_score
             )
 
+        # Protective stop for the open position (computed unconditionally so it
+        # can never re-bind the entry/elif chain below — PR #15 review):
+        # fixed percentage by default; ATR override when ATR stops are enabled.
+        stop_price = entry_fill_price * (1 - FIXED_STOP_PCT)
+        if stop_loss_method == "atr" and in_position:
+            atr_i = atr_series[i] if i < len(atr_series) else None
+            if atr_i is not None and atr_i > 0:
+                stop_price = entry_fill_price - atr_i * stop_atr_multiplier
+
         # Entry signal: composite score crosses above threshold
         if not in_position and composite >= ENTRY_THRESHOLD:
             entry_fill_price = price * (1 + slippage_pct)  # pay slippage on entry
@@ -289,16 +298,9 @@ def run_backtest(
             equity -= position_size * entry_fill_price * commission_pct  # Commission on entry
             in_position = True
             trade_log.append({"type": "entry", "price": round(entry_fill_price, 6), "index": i})
-
-        # Protective stop for the open position: fixed percentage by default,
-        # entry fill minus ATR × multiplier when ATR stops are enabled.
-        stop_price = entry_fill_price * (1 - FIXED_STOP_PCT)
-        if stop_loss_method == "atr" and in_position:
-            atr_i = atr_series[i] if i < len(atr_series) else None
-            if atr_i is not None and atr_i > 0:
-                stop_price = entry_fill_price - atr_i * stop_atr_multiplier
-
-        # Exit signal: composite drops below threshold OR the stop is hit
+        # Exit signal: composite drops below threshold OR the stop is hit.
+        # Mutually exclusive with the entry branch (if/elif) and evaluated
+        # against the stop_price computed above.
         elif in_position and (composite <= -ENTRY_THRESHOLD or price < stop_price):
             exit_price = price * (1 - slippage_pct)
             proceeds = position_size * exit_price
