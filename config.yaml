@@ -63,6 +63,7 @@ scoring:
   threshold: 80
   top_n: 2
   rs_threshold: 0.05  # Relative strength threshold (5%) — ratio >= +threshold → +1, <= -threshold → -1
+  stop_atr_multiplier: 2.0  # ATR stop distance (trade_plan/backtest "atr" method): stop = entry − ATR × this
   component_weights:
     trend: 25
     momentum: 20
@@ -71,6 +72,14 @@ scoring:
     pivot_position: 10
     volatility: 10
     technical_summary: 5
+
+# ── Trade Plan: stops and targets (backlog #008) ─────────────────────────
+trade_plan:
+  # "fixed_pct" (default, backward compatible) | "atr" (volatility-scaled stops/targets)
+  stop_loss_method: "fixed_pct"
+  stop_loss_pct: 0.05        # fixed_pct mode: stop distance as a fraction of entry
+  tp1_atr_multiplier: 1.5    # atr mode: TP1 = entry ± ATR × 1.5
+  tp2_atr_multiplier: 3.0    # atr mode: TP2 = entry ± ATR × 3.0
 
 scoring_penalties:
   rsi_overbought_max: 80

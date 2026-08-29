@@ -20,9 +20,15 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import sys
 from dataclasses import dataclass, asdict
 from typing import Optional
+
+
+# Legacy protective stop used when stop_loss_method == "fixed_pct".
+FIXED_STOP_PCT = 0.02
+DEFAULT_ATR_STOP_MULTIPLIER = 2.0
 
 
 @dataclass
@@ -116,12 +122,34 @@ def calculate_max_drawdown(equity_curve: list[float]) -> tuple[float, int, int]:
     return round(max_dd * 100, 2), dd_start, dd_end
 
 
+def _atr_series(bars: list[dict], period: int = 14) -> list:
+    """Causal Wilder ATR series for the bars (index i uses bars[0..i] only).
+
+    Returns an all-None list when high/low data or the indicator module is
+    unavailable, so ATR mode degrades to the fixed-percentage stop.
+    """
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from indicators import compute_atr
+
+        return compute_atr(
+            [float(b["high"]) for b in bars],
+            [float(b["low"]) for b in bars],
+            [float(b["close"]) for b in bars],
+            period,
+        )
+    except Exception:
+        return [None] * len(bars)
+
+
 def run_backtest(
     bars: list[dict],
     pillar_weights: dict,
     capital: float = 10000.0,
     commission_pct: float = 0.001,
     slippage_pct: float = 0.0005,
+    stop_loss_method: str = "fixed_pct",
+    stop_atr_multiplier: float = DEFAULT_ATR_STOP_MULTIPLIER,
 ) -> BacktestResult:
     """
     Run a backtest simulation against historical OHLCV data.
@@ -132,12 +160,19 @@ def run_backtest(
         capital: Starting capital
         commission_pct: Commission per trade as fraction (0.1%% = 0.001)
         slippage_pct: Slippage per trade as fraction
+        stop_loss_method: "fixed_pct" (default, legacy 2%% stop) or "atr"
+            (stop = entry fill - ATR x stop_atr_multiplier, backlog #008)
+        stop_atr_multiplier: ATR multiple for the volatility stop
 
     Returns:
         BacktestResult with all metrics
     """
     if not bars or len(bars) < 50:
         raise ValueError("Need at least 50 bars for backtesting")
+    if stop_loss_method not in ("fixed_pct", "atr"):
+        raise ValueError(
+            f"Unknown stop_loss_method {stop_loss_method!r}; expected 'fixed_pct' or 'atr'"
+        )
 
     # Entry/exit thresholds. Per-bar scores are in {-1, +1} and pillar weights
     # sum to ~1.0, so composite lives in roughly [-1, +1]. Thresholds must sit
@@ -154,6 +189,12 @@ def run_backtest(
     equity_curve = [capital]
     daily_returns = []
     trade_log = []
+
+    # Volatility stops need the ATR of every bar; Wilder's recursion is causal,
+    # so one pass over the whole series introduces no look-ahead.
+    atr_series = (
+        _atr_series(bars) if stop_loss_method == "atr" else [None] * len(bars)
+    )
 
     winning_trades = []
     losing_trades = []
@@ -241,6 +282,15 @@ def run_backtest(
                 w_macro * macro_score
             )
 
+        # Protective stop for the open position (computed unconditionally so it
+        # can never re-bind the entry/elif chain below — PR #15 review):
+        # fixed percentage by default; ATR override when ATR stops are enabled.
+        stop_price = entry_fill_price * (1 - FIXED_STOP_PCT)
+        if stop_loss_method == "atr" and in_position:
+            atr_i = atr_series[i] if i < len(atr_series) else None
+            if atr_i is not None and atr_i > 0:
+                stop_price = entry_fill_price - atr_i * stop_atr_multiplier
+
         # Entry signal: composite score crosses above threshold
         if not in_position and composite >= ENTRY_THRESHOLD:
             entry_fill_price = price * (1 + slippage_pct)  # pay slippage on entry
@@ -248,9 +298,10 @@ def run_backtest(
             equity -= position_size * entry_fill_price * commission_pct  # Commission on entry
             in_position = True
             trade_log.append({"type": "entry", "price": round(entry_fill_price, 6), "index": i})
-
-        # Exit signal: composite drops below threshold OR 2% stop below entry fill
-        elif in_position and (composite <= -ENTRY_THRESHOLD or price < entry_fill_price * 0.98):
+        # Exit signal: composite drops below threshold OR the stop is hit.
+        # Mutually exclusive with the entry branch (if/elif) and evaluated
+        # against the stop_price computed above.
+        elif in_position and (composite <= -ENTRY_THRESHOLD or price < stop_price):
             exit_price = price * (1 - slippage_pct)
             proceeds = position_size * exit_price
             equity += proceeds - proceeds * commission_pct  # Commission on exit
@@ -343,7 +394,12 @@ def run_backtest(
         max_consecutive_wins=max_consec_wins,
         max_consecutive_losses=max_consec_losses,
         daily_returns_count=len(daily_returns),
-        notes=[f"Commission: {commission_pct * 100:.2f}%% | Slippage: {slippage_pct * 100:.3f}%%"],
+        notes=[
+            f"Commission: {commission_pct * 100:.2f}%% | Slippage: {slippage_pct * 100:.3f}%%",
+            "Stop method: " + (f"atr (ATR x {stop_atr_multiplier:g})"
+                               if stop_loss_method == "atr"
+                               else f"fixed_pct ({FIXED_STOP_PCT * 100:.0f}%)"),
+        ],
     )
 
 
@@ -357,6 +413,11 @@ def main() -> int:
     ap.add_argument("--capital", type=float, default=10000.0, help="Initial capital")
     ap.add_argument("--commission", type=float, default=0.001, help="Commission per trade (default: 0.1%%)")
     ap.add_argument("--slippage", type=float, default=0.0005, help="Slippage per trade (default: 0.05%%)")
+    ap.add_argument("--stop-loss-method", choices=["fixed_pct", "atr"], default=None,
+                    help="Protective stop type (default: config trade_plan.stop_loss_method, else fixed_pct)")
+    ap.add_argument("--stop-atr-multiplier", type=float, default=None,
+                    help="ATR multiple for the stop (default: config scoring.stop_atr_multiplier, else 2.0)")
+    ap.add_argument("--config", "-c", default=None, help="config.yaml providing the stop settings")
     ap.add_argument("--output", "-o", default=None, help="Output JSON file")
     args = ap.parse_args()
 
@@ -365,6 +426,25 @@ def main() -> int:
     for w in args.weights:
         key, val = w.split("=")
         pillar_weights[key] = float(val)
+
+    # Stop settings: CLI flags > config.yaml > defaults (fixed_pct).
+    stop_method = args.stop_loss_method or "fixed_pct"
+    stop_mult = (args.stop_atr_multiplier if args.stop_atr_multiplier is not None
+                 else DEFAULT_ATR_STOP_MULTIPLIER)
+    if args.config:
+        try:
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            from trade_plan import load_config, resolve_stop_settings
+
+            resolved = resolve_stop_settings(
+                load_config(args.config),
+                stop_loss_method=args.stop_loss_method,
+                stop_atr_multiplier=args.stop_atr_multiplier,
+            )
+            stop_method = resolved["stop_loss_method"]
+            stop_mult = resolved["stop_atr_multiplier"]
+        except Exception as exc:
+            print(f"[WARN] stop settings from {args.config} ignored: {exc}", file=sys.stderr)
 
     try:
         with open(args.input) as f:
@@ -383,6 +463,8 @@ def main() -> int:
             capital=args.capital,
             commission_pct=args.commission,
             slippage_pct=args.slippage,
+            stop_loss_method=stop_method,
+            stop_atr_multiplier=stop_mult,
         )
 
         output_text = json.dumps(asdict(result), indent=2, ensure_ascii=False)
