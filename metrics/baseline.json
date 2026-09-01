@@ -1,7 +1,7 @@
 {
-  "minTests": 197,
-  "timestamp": "2026-08-23T11:27:00Z",
-  "branch": "feature/intraday-scanner",
+  "minTests": 204,
+  "timestamp": "2026-09-01T02:10:00Z",
+  "branch": "auto/atr-dynamic-stops",
   "tests": {
     "total": 109,
     "passed": 109,
@@ -14,19 +14,19 @@
     "scripts.test_scoring_engine"
   ],
   "changes": {
-    "description": "Reconcile closed-not-merged auto/* PRs so a dead PR's review-fix item is removed (fixes phantom-item loop: 008-fix-pr10 / closed PR #10 shipped via merged PR #9)",
-    "new_tests_added": 3,
+    "description": "PR #15 review round 3 — decouple ATR stop computation from the exit elif; add test_backtest_stop_methods.py (structural AST + behavioural probes) guarding that ATR-mode positions exit on stop-hit and composite reversal",
+    "new_tests_added": 7,
     "tests_fixed": 0,
     "modules_modified": [
-      "scripts/hermes/backlog-reconcile.sh"
+      "scripts/backtest.py"
     ],
     "test_files_modified": [
-      "test_backlog_reconcile_closed.py (new)"
+      "test_backtest_stop_methods.py (new)"
     ]
   },
   "baseline": {
-    "previous_total": 194,
-    "new_total": 197,
-    "delta": "+3"
+    "previous_total": 197,
+    "new_total": 204,
+    "delta": "+7"
   }
 }
