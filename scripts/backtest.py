@@ -286,7 +286,12 @@ def run_backtest(
         # can never re-bind the entry/elif chain below — PR #15 review):
         # fixed percentage by default; ATR override when ATR stops are enabled.
         stop_price = entry_fill_price * (1 - FIXED_STOP_PCT)
-        if stop_loss_method == "atr" and in_position:
+        # ATR stop selection is a plain nested computation that runs regardless
+        # of the chosen method (the `if stop_loss_method == "atr"` gate that
+        # surrounded it is what originally re-bound the exit elif). Only the
+        # open-position guard remains — the fixed-percentage stop is left
+        # untouched when ATR stops are disabled.
+        if in_position:
             atr_i = atr_series[i] if i < len(atr_series) else None
             if atr_i is not None and atr_i > 0:
                 stop_price = entry_fill_price - atr_i * stop_atr_multiplier

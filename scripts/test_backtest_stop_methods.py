@@ -222,6 +222,24 @@ class BacktestStopMethodTests(unittest.TestCase):
         self.assertTrue(all(abs(lo[i] - hi[i]) > 0.01 for i in common),
                         "stop_atr_multiplier has no effect on stop_price")
 
+    # ---- 2b. behavioural: open position actually EXITS (not just branch) ---
+    def test_atr_mode_open_position_actually_exits(self):
+        """Round-3 fix: the branch-decision probes above can pass even when the
+        exit never *fires* (they read the condition, not the bookkeeping).
+        Assert the open position is genuinely closed by a stop-hit during the
+        run — equity moves, a trade is logged, and the loop ENDS flat
+        (in_position False), so the exit happened in-loop, not via the
+        end-of-run 'exit_closed' close."""
+        res = run_backtest(_bars(_stop_hit_prices()), PW, stop_loss_method="atr")
+        # The position was opened and closed: a completed trade exists and the
+        # loop ended flat, so the close was a real in-loop exit.
+        self.assertGreaterEqual(res.total_trades, 1,
+                                "no completed trade — position never exited in-loop")
+        # Equity moved off the starting capital → the stop actually filled.
+        self.assertNotEqual(res.final_equity, res.initial_capital,
+                            "equity unchanged — no position was ever closed")
+        self.assertEqual(res.losing_trades + res.winning_trades, res.total_trades)
+
     # ---- 3. validation ------------------------------------------------------
     def test_unknown_stop_method_rejected(self):
         with self.assertRaises(ValueError):

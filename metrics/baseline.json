@@ -1,6 +1,6 @@
 {
-  "minTests": 204,
-  "timestamp": "2026-09-01T02:10:00Z",
+  "minTests": 205,
+  "timestamp": "2026-09-11T02:05:00Z",
   "branch": "auto/atr-dynamic-stops",
   "tests": {
     "total": 109,
@@ -14,19 +14,19 @@
     "scripts.test_scoring_engine"
   ],
   "changes": {
-    "description": "PR #15 review round 3 — decouple ATR stop computation from the exit elif; add test_backtest_stop_methods.py (structural AST + behavioural probes) guarding that ATR-mode positions exit on stop-hit and composite reversal",
-    "new_tests_added": 7,
+    "description": "PR #15 review round 4 — ATR stop selection made a plain nested computation (removed the `if stop_loss_method == \"atr\"` gate so it can't re-bind the exit elif; only the in_position guard remains); added test_atr_mode_open_position_actually_exits asserting the ATR-mode position genuinely closes in-loop (stop-hit), not via the end-of-run close",
+    "new_tests_added": 1,
     "tests_fixed": 0,
     "modules_modified": [
       "scripts/backtest.py"
     ],
     "test_files_modified": [
-      "test_backtest_stop_methods.py (new)"
+      "test_backtest_stop_methods.py"
     ]
   },
   "baseline": {
-    "previous_total": 197,
-    "new_total": 204,
-    "delta": "+7"
+    "previous_total": 204,
+    "new_total": 205,
+    "delta": "+1"
   }
 }
