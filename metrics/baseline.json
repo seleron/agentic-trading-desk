@@ -1,6 +1,6 @@
 {
-  "minTests": 205,
-  "timestamp": "2026-09-11T02:05:00Z",
+  "minTests": 207,
+  "timestamp": "2026-09-16T02:05:00Z",
   "branch": "auto/atr-dynamic-stops",
   "tests": {
     "total": 109,
@@ -11,22 +11,24 @@
   "test_suites": [
     "scripts.test_pipeline",
     "scripts.test_data_quality",
-    "scripts.test_scoring_engine"
+    "scripts.test_scoring_engine",
+    "scripts.test_shipped_stop_method"
   ],
   "changes": {
-    "description": "PR #15 review round 4 — ATR stop selection made a plain nested computation (removed the `if stop_loss_method == \"atr\"` gate so it can't re-bind the exit elif; only the in_position guard remains); added test_atr_mode_open_position_actually_exits asserting the ATR-mode position genuinely closes in-loop (stop-hit), not via the end-of-run close",
-    "new_tests_added": 1,
+    "description": "PR #15 review round 7 — ship #008 with ATR stops enabled: config.yaml trade_plan.stop_loss_method fixed_pct -> atr (pre-#008 engine already preferred ATR×2 stops, so fixed_pct as default regressed orchestrator output to a flat 5% stop). Added test_shipped_stop_method.py pinning the shipped method to atr (fails on revert) and asserting the no-config code default stays fixed_pct.",
+    "new_tests_added": 2,
     "tests_fixed": 0,
-    "modules_modified": [
-      "scripts/backtest.py"
-    ],
+    "modules_modified": [],
     "test_files_modified": [
-      "test_backtest_stop_methods.py"
+      "test_shipped_stop_method.py (new)"
+    ],
+    "config_modified": [
+      "config.yaml"
     ]
   },
   "baseline": {
-    "previous_total": 204,
-    "new_total": 205,
-    "delta": "+1"
+    "previous_total": 205,
+    "new_total": 207,
+    "delta": "+2"
   }
 }

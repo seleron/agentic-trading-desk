@@ -75,8 +75,17 @@ scoring:
 
 # ── Trade Plan: stops and targets (backlog #008) ─────────────────────────
 trade_plan:
-  # "fixed_pct" (default, backward compatible) | "atr" (volatility-scaled stops/targets)
-  stop_loss_method: "fixed_pct"
+  # "fixed_pct" (flat % stop) | "atr" (volatility-scaled stops/targets).
+  #
+  # Ships as "atr" (PR #15, round-7 review): the pre-#008 generate_trade_plan
+  # already preferred an ATR×2 stop whenever atr14 was available, so keeping
+  # "fixed_pct" (flat 5%) as the default would have regressed existing
+  # orchestrator output from ATR-scaled stops to a flat 5% stop — a change the
+  # PR title/description ("ATR-based dynamic stops and targets") imply is an
+  # improvement, not a disabling. "atr" restores that historical ATR-preferred
+  # behaviour and actually enables the #008 feature. Set to "fixed_pct" to
+  # opt back into the legacy flat-percentage stop + R/R target ladder.
+  stop_loss_method: "atr"
   stop_loss_pct: 0.05        # fixed_pct mode: stop distance as a fraction of entry
   tp1_atr_multiplier: 1.5    # atr mode: TP1 = entry ± ATR × 1.5
   tp2_atr_multiplier: 3.0    # atr mode: TP2 = entry ± ATR × 3.0
