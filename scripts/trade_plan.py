@@ -6,8 +6,8 @@ Structured Trade Plan Generator.
 
 Takes a scoring result and generates a JSON trade plan with:
 - Entry signal (price level, confidence)
-- Stop loss placement (technical basis)
-- Take profit targets (multiple levels based on R/R)
+- Stop loss placement (fixed percentage or ATR-scaled, see stop_loss_method)
+- Take profit targets (R/R ladder in fixed_pct mode, ATR multiples in atr mode)
 - Position sizing (based on risk tolerance)
 - Time-based exit conditions
 - Risk management rules
@@ -23,9 +23,95 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import sys
 from dataclasses import asdict
 from typing import Optional
+
+
+# ── Stop / target method configuration (backlog #008) ────────────────────────
+# "fixed_pct" (default) keeps the historical fixed-percentage stop and the
+# R/R target ladder. "atr" scales the stop and the targets with current
+# volatility (Wilder ATR from indicators.py), which is what the BIST
+# volatility regimes call for.
+STOP_LOSS_METHODS = ("fixed_pct", "atr")
+DEFAULT_STOP_LOSS_METHOD = "fixed_pct"
+DEFAULT_FIXED_STOP_PCT = 0.05
+DEFAULT_ATR_STOP_MULTIPLIER = 2.0
+DEFAULT_ATR_TP_MULTIPLIERS = (1.5, 3.0)
+
+# Repo-level config.yaml (one level up from scripts/).
+DEFAULT_CONFIG_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config.yaml"
+)
+
+
+def load_config(config_path: str = "config.yaml") -> dict:
+    """Load config.yaml into a dict; {} when absent/unreadable or PyYAML missing."""
+    try:
+        import yaml
+        with open(config_path) as f:
+            return yaml.safe_load(f) or {}
+    except Exception:
+        return {}
+
+
+def resolve_stop_settings(
+    config: Optional[dict] = None,
+    stop_loss_method: Optional[str] = None,
+    stop_atr_multiplier: Optional[float] = None,
+    fixed_stop_pct: Optional[float] = None,
+) -> dict:
+    """Resolve stop/target settings: explicit arg > config.yaml > default.
+
+    config.yaml keys:
+        trade_plan.stop_loss_method     "fixed_pct" | "atr"   (default fixed_pct)
+        trade_plan.stop_loss_pct        fixed-mode stop distance as a fraction
+        trade_plan.tp1_atr_multiplier   atr-mode TP1 multiple (default 1.5)
+        trade_plan.tp2_atr_multiplier   atr-mode TP2 multiple (default 3.0)
+        scoring.stop_atr_multiplier     stop = entry -/+ ATR x multiple (default 2.0)
+
+    Raises:
+        ValueError: unknown stop_loss_method or a non-numeric multiplier.
+    """
+    cfg = (config or {}).get("trade_plan") or {}
+    scoring_cfg = (config or {}).get("scoring") or {}
+
+    method = str(
+        stop_loss_method or cfg.get("stop_loss_method") or DEFAULT_STOP_LOSS_METHOD
+    ).strip().lower()
+    if method not in STOP_LOSS_METHODS:
+        raise ValueError(
+            f"Unknown stop_loss_method {method!r}; expected one of {STOP_LOSS_METHODS}"
+        )
+
+    def _num(override, cfg_value, default, name):
+        raw = override if override is not None else cfg_value
+        try:
+            return float(default if raw is None else raw)
+        except (TypeError, ValueError):
+            raise ValueError(f"{name} must be numeric, got {raw!r}")
+
+    fixed_pct = _num(fixed_stop_pct, cfg.get("stop_loss_pct"),
+                     DEFAULT_FIXED_STOP_PCT, "trade_plan.stop_loss_pct")
+    atr_mult = _num(stop_atr_multiplier, scoring_cfg.get("stop_atr_multiplier"),
+                    DEFAULT_ATR_STOP_MULTIPLIER, "scoring.stop_atr_multiplier")
+    tp1 = _num(None, cfg.get("tp1_atr_multiplier"),
+               DEFAULT_ATR_TP_MULTIPLIERS[0], "trade_plan.tp1_atr_multiplier")
+    tp2 = _num(None, cfg.get("tp2_atr_multiplier"),
+               DEFAULT_ATR_TP_MULTIPLIERS[1], "trade_plan.tp2_atr_multiplier")
+
+    if not 0 < fixed_pct < 1:
+        raise ValueError(f"trade_plan.stop_loss_pct must be in (0, 1), got {fixed_pct}")
+    if atr_mult <= 0:
+        raise ValueError(f"scoring.stop_atr_multiplier must be > 0, got {atr_mult}")
+
+    return {
+        "stop_loss_method": method,
+        "fixed_stop_pct": fixed_pct,
+        "stop_atr_multiplier": atr_mult,
+        "atr_tp_multipliers": (tp1, tp2),
+    }
 
 
 def calculate_position_size(
@@ -120,12 +206,43 @@ def calculate_targets(
     return targets
 
 
+def calculate_atr_targets(
+    entry_price: float,
+    atr_value: float,
+    direction: str = "long",
+    stop_distance: Optional[float] = None,
+    multipliers: tuple = DEFAULT_ATR_TP_MULTIPLIERS,
+) -> list[dict]:
+    """Volatility-scaled take-profit ladder: TPn = entry +/- (ATR x multiple).
+
+    Used by the "atr" stop method so target distance tracks the same regime as
+    the stop (standard 1.5x / 3.0x ATR framework).
+    """
+    targets = []
+    for i, mult in enumerate(multipliers):
+        offset = atr_value * mult
+        price = entry_price + offset if direction == "long" else entry_price - offset
+        targets.append({
+            "level": f"TP{i+1}",
+            "price": round(price, 6),
+            "risk_reward_ratio": round(offset / stop_distance, 2) if stop_distance else None,
+            "atr_multiple": mult,
+            "distance_pct": round(abs(price / entry_price - 1) * 100, 2),
+            "recommendation": "Partial exit" if i == len(multipliers) - 1 else f"Scale out {i+1}",
+        })
+    return targets
+
+
 def generate_trade_plan(
     symbol: str,
     decision: dict,
     indicators: dict,
     capital: float = 10000.0,
     risk_per_trade_pct: float = 0.02,
+    config: Optional[dict] = None,
+    stop_loss_method: Optional[str] = None,
+    stop_atr_multiplier: Optional[float] = None,
+    fixed_stop_pct: Optional[float] = None,
 ) -> dict:
     """
     Generate a complete trade plan from scoring results.
@@ -136,6 +253,12 @@ def generate_trade_plan(
         indicators: Indicators dict from indicators.py
         capital: Available trading capital
         risk_per_trade_pct: Risk per trade as fraction of capital
+        config: Parsed config.yaml mapping (trade_plan.* / scoring.* keys); when
+                omitted every stop setting falls back to its default, i.e.
+                `stop_loss_method="fixed_pct"` — the historical behaviour
+        stop_loss_method: Override for config's trade_plan.stop_loss_method
+        stop_atr_multiplier: Override for config's scoring.stop_atr_multiplier
+        fixed_stop_pct: Override for config's trade_plan.stop_loss_pct
 
     Returns:
         Complete trade plan JSON-serializable dict
@@ -161,36 +284,47 @@ def generate_trade_plan(
 
     direction = "long" if is_long_entry else "short"
 
-    # Stop loss placement — prefer ATR-based if available, fall back to Bollinger Bands
+    # Stop / target settings — config-driven, default "fixed_pct" (backlog #008).
+    settings = resolve_stop_settings(
+        config,
+        stop_loss_method=stop_loss_method,
+        stop_atr_multiplier=stop_atr_multiplier,
+        fixed_stop_pct=fixed_stop_pct,
+    )
+    method = settings["stop_loss_method"]
+
     atr_val = indicators.get("atr14")
-    if direction == "long":
-        bb_lower = indicators.get("bb_lower") or current_price * 0.95
-        if atr_val is not None and atr_val > 0:
-            # ATR-based stop loss (2× ATR below entry)
-            stop_loss = current_price - (atr_val * 2.0)
-            stop_basis = f"ATR({int(indicators.get('atr14', 14))}×{atr_val:.4f}) × 2"
-        else:
-            buffer = current_price * 0.01 * 2.0
-            stop_loss = bb_lower - buffer
-            stop_basis = "BB lower band − ATR buffer (fallback)"
+    if atr_val is not None and atr_val <= 0:
+        atr_val = None  # a zero/None ATR (warmup) cannot size a volatility stop
+
+    # +1 → stop below entry (long), -1 → stop above entry (short).
+    side = 1 if direction == "long" else -1
+
+    if method == "atr" and atr_val is not None:
+        stop_distance = atr_val * settings["stop_atr_multiplier"]
+        stop_basis = f"ATR {atr_val:.4f} × {settings['stop_atr_multiplier']:g}"
     else:
-        bb_upper = indicators.get("bb_upper") or current_price * 1.05
-        if atr_val is not None and atr_val > 0:
-            # ATR-based stop loss (2× ATR above entry)
-            stop_loss = current_price + (atr_val * 2.0)
-            stop_basis = f"ATR({int(indicators.get('atr14', 14))}×{atr_val:.4f}) × 2"
-        else:
-            buffer = current_price * 0.01 * 2.0
-            stop_loss = bb_upper + buffer
-            stop_basis = "BB upper band + ATR buffer (fallback)"
+        stop_distance = current_price * settings["fixed_stop_pct"]
+        stop_basis = f"fixed {settings['fixed_stop_pct'] * 100:.2f}% of entry"
+        if method == "atr":
+            stop_basis += " (ATR unavailable — fixed_pct fallback)"
+
+    stop_loss = current_price - side * stop_distance
 
     # Position sizing
     position_info = calculate_position_size(
         capital, current_price, stop_loss, risk_per_trade_pct
     )
 
-    # Take profit targets
-    targets = calculate_targets(current_price, stop_loss, direction)
+    # Take profit targets — ATR multiples with the atr method, R/R ladder otherwise
+    if method == "atr" and atr_val is not None:
+        targets = calculate_atr_targets(
+            current_price, atr_val, direction,
+            stop_distance=stop_distance,
+            multipliers=settings["atr_tp_multipliers"],
+        )
+    else:
+        targets = calculate_targets(current_price, stop_loss, direction)
 
     # Time-based exit conditions
     time_plan = {
@@ -244,6 +378,9 @@ def generate_trade_plan(
             "basis": stop_basis,
             "distance_pct": round(abs(current_price - stop_loss) / current_price * 100, 2),
         },
+        # Reported back so the orchestrator can tell the user how the stop was sized.
+        "stop_loss_method": method,
+        "atr_value": round(atr_val, 6) if atr_val is not None else None,
         **position_info,
         "targets": targets,
         "time_plan": time_plan,
@@ -267,6 +404,14 @@ def main() -> int:
     ap.add_argument("--stdin", action="store_true", help="Read scorecard from stdin")
     ap.add_argument("--capital", type=float, default=10000.0, help="Trading capital (default: 10000)")
     ap.add_argument("--risk-pct", type=float, default=0.02, help="Risk per trade as fraction (default: 0.02 = 2%%)")
+    ap.add_argument("--config", "-c", default=DEFAULT_CONFIG_PATH,
+                    help="config.yaml path (stop_loss_method / stop_atr_multiplier live here)")
+    ap.add_argument("--stop-loss-method", choices=list(STOP_LOSS_METHODS), default=None,
+                    help="Override config trade_plan.stop_loss_method (default: fixed_pct)")
+    ap.add_argument("--stop-atr-multiplier", type=float, default=None,
+                    help="Override config scoring.stop_atr_multiplier (default: 2.0)")
+    ap.add_argument("--stop-loss-pct", type=float, default=None,
+                    help="Override config trade_plan.stop_loss_pct (default: 0.05)")
     ap.add_argument("--output", "-o", default=None, help="Output file path")
     args = ap.parse_args()
 
@@ -288,6 +433,10 @@ def main() -> int:
             indicators=scorecard.get("indicators", scorecard),
             capital=args.capital,
             risk_per_trade_pct=args.risk_pct,
+            config=load_config(args.config),
+            stop_loss_method=args.stop_loss_method,
+            stop_atr_multiplier=args.stop_atr_multiplier,
+            fixed_stop_pct=args.stop_loss_pct,
         )
 
         output = json.dumps(plan, indent=2, ensure_ascii=False)

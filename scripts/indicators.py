@@ -150,32 +150,39 @@ def bollinger(close: list[float], period: int = 20, mult: float = 2.0):
     return mid, upper, lower, pct_b
 
 
-def calculate_atr(
-    highs: list[float], lows: list[float], closes: list[float], period: int = 14
+def compute_atr(
+    high_series: list[float],
+    low_series: list[float],
+    close_series: list[float],
+    period: int = 14,
 ) -> list[Optional[float]]:
-    """Average True Range — None-padded warmup of `period` bars.
+    """Average True Range (Wilder) — None-padded warmup of `period` bars.
+
+    Same Wilder recursion as rsi_wilder(): the first value is the simple average
+    of the first `period` true ranges, each later one is
+    `(prev_atr * (period - 1) + tr) / period` — NOT a simple moving average.
 
     Args:
-        highs: High prices (oldest first).
-        lows: Low prices (oldest first).
-        closes: Close prices (oldest first).
+        high_series: High prices (oldest first).
+        low_series: Low prices (oldest first).
+        close_series: Close prices (oldest first).
         period: ATR lookback period, default 14 (standard).
 
     Returns:
         List of ATR values with None padding in warmup.
     """
-    n = len(closes)
-    if n < period + 1 or any(len(arr) < n for arr in (highs, lows)):
+    n = len(close_series)
+    if n < period + 1 or any(len(arr) < n for arr in (high_series, low_series)):
         # Honour the "same length as input" contract, even on the short path.
         return [None] * n
 
     out: list[Optional[float]] = [None] * n
-    # True ranges
+    # True ranges (Wilder): max(H-L, |H-prev C|, |L-prev C|)
     tr_values: list[float] = []
     for i in range(1, n):
-        high_low = highs[i] - lows[i]
-        high_close_prev = abs(highs[i] - closes[i - 1]) if i > 0 else 0.0
-        low_close_prev = abs(lows[i] - closes[i - 1]) if i > 0 else 0.0
+        high_low = high_series[i] - low_series[i]
+        high_close_prev = abs(high_series[i] - close_series[i - 1])
+        low_close_prev = abs(low_series[i] - close_series[i - 1])
         tr_values.append(max(high_low, high_close_prev, low_close_prev))
 
     # Wilder smoothing for ATR
@@ -189,6 +196,12 @@ def calculate_atr(
         out[i] = (prev_atr * (period - 1) + tr_values[i - 1]) / period
 
     return out
+
+
+# Backlog #008 renamed the canonical ATR entry point to compute_atr (matching the
+# compute_* naming of the rest of the module); the old name stays as an alias so
+# existing callers and tests keep working.
+calculate_atr = compute_atr
 
 
 def calculate_ichimoku(
@@ -410,7 +423,7 @@ def compute(
     ichimoku_result: dict[str, Optional[float]] | None = None
     vwap_val: float | None = None
     if highs is not None and lows is not None:
-        atr_values = calculate_atr(highs, lows, close, atr_period)
+        atr_values = compute_atr(highs, lows, close, atr_period)
         ichimoku_result = calculate_ichimoku(highs, lows, close)
         vwap_val = calculate_vwap(highs, lows, close, volumes)
 
