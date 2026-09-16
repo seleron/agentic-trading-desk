@@ -5,8 +5,9 @@ between the entry `if` and the exit `elif` re-binds the exit branch, so
 ATR-mode positions never exit.
 
 Two kinds of guard:
-  1. Structural AST check — the exit branch must be the `elif` of the entry
-     `if`, evaluated against the unconditionally-computed `stop_price`.
+  1. Structural AST check — the exit must be its own `if` statement in the
+     for-loop body (decoupled from the entry `if`), evaluated against the
+     unconditionally-computed `stop_price`.
   2. Behavioural source-patch probes — the backtest loop is executed with
      instrumentation injected at the branch itself, so the assertions read
      the branch decision directly (no dependence on downstream win/loss
@@ -66,7 +67,8 @@ def _instrumented_run(bars, **kw):
 
       ('branch', i, in_position, exit_condition_true, price, stop_price,
        composite)
-        — recorded at the exit `elif` while holding a position
+        — recorded in the for-loop body while holding a position, with the
+          same condition the exit if uses
       ('atr_stop', bar_index, atr_value, stop_price)
         — recorded every time the ATR override computes a stop
 
@@ -111,28 +113,6 @@ def _instrumented_run(bars, **kw):
 
 class BacktestStopMethodTests(unittest.TestCase):
     # ---- 1. structural ---------------------------------------------------
-    def test_exit_elif_is_bound_to_entry_if(self):
-        """The exit branch (requires in_position, compares stop_price) must
-        chain directly off the entry if — nothing may sit between them
-        (PR #15: the stop_price block stole the elif)."""
-        src = textwrap.dedent(inspect.getsource(backtest.run_backtest))
-        tree = ast.parse(src)
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.If):
-                continue
-            test_src = ast.unparse(node.test)
-            if "not in_position" in test_src and "composite" in test_src:
-                self.assertTrue(
-                    node.orelse and len(node.orelse) == 1
-                    and isinstance(node.orelse[0], ast.If),
-                    "entry if must chain directly to the exit elif",
-                )
-                exit_src = ast.unparse(node.orelse[0].test)
-                self.assertIn("in_position", exit_src)
-                self.assertIn("stop_price", exit_src)
-                return
-        self.fail("entry-if chain ('not in_position ... composite') not found")
-
     def test_stop_price_computed_unconditionally(self):
         """The fixed stop default must be assigned on every bar regardless of
         method, with the ATR override nested inside — not the other way
@@ -153,9 +133,48 @@ class BacktestStopMethodTests(unittest.TestCase):
             for child in ast.iter_child_nodes(n):
                 parents[id(child)] = n
         self.assertIsInstance(parents[id(default_node)], ast.For)
-        # ATR override sits inside the `if stop_loss_method == "atr"` if
+        # ATR override sits inside a guard `if`
         p = parents.get(id(atr_node))
         self.assertIsInstance(p, ast.If)
+
+    def test_exit_is_independent_if_with_stop_and_in_position(self):
+        """Round-3 required fix: the exit must be its OWN `if` statement in
+        the for-loop body (decoupled from the entry `if`), evaluated as
+        `in_position and (composite <= -ENTRY_THRESHOLD or price < stop_price)`.
+        The round-2 elif-chain shape let anything placed between the entry if
+        and the exit steal/short-circuit the exit branch (the original PR #15
+        bug)."""
+        src = textwrap.dedent(inspect.getsource(backtest.run_backtest))
+        tree = ast.parse(src)
+        exit_nodes = [
+            n for n in ast.walk(tree)
+            if isinstance(n, ast.If)
+            and "stop_price" in ast.unparse(n.test)
+            and "in_position" in ast.unparse(n.test)
+        ]
+        self.assertEqual(len(exit_nodes), 1,
+                         "expected exactly one exit if using stop_price")
+        exit_node = exit_nodes[0]
+        # Independent statement: parent is the for-loop body, not the orelse
+        # (elif) of another if.
+        parents = {}
+        for n in ast.walk(tree):
+            for child in ast.iter_child_nodes(n):
+                parents[id(child)] = n
+        self.assertIsInstance(parents[id(exit_node)], ast.For,
+                              "exit if must be its own statement in the loop "
+                              "body, not an elif chained off the entry if")
+        # Condition shape: in_position AND (composite reversal OR stop hit)
+        test = exit_node.test
+        self.assertIsInstance(test, ast.BoolOp)
+        self.assertIsInstance(test.op, ast.And)
+        conds = [ast.unparse(c) for c in test.values]
+        self.assertTrue(any("in_position" in c for c in conds),
+                        "exit must be guarded by in_position")
+        self.assertTrue(any("stop_price" in c for c in conds),
+                        "exit must compare stop_price")
+        self.assertTrue(any("composite" in c for c in conds),
+                        "exit must also allow the composite-reversal clause")
 
     # ---- 2. behavioural: stop-hit exits in both modes ---------------------
     def test_fixed_pct_mode_exits_on_stop_hit(self):

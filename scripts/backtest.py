@@ -303,10 +303,12 @@ def run_backtest(
             equity -= position_size * entry_fill_price * commission_pct  # Commission on entry
             in_position = True
             trade_log.append({"type": "entry", "price": round(entry_fill_price, 6), "index": i})
+
         # Exit signal: composite drops below threshold OR the stop is hit.
-        # Mutually exclusive with the entry branch (if/elif) and evaluated
-        # against the stop_price computed above.
-        elif in_position and (composite <= -ENTRY_THRESHOLD or price < stop_price):
+        # This is its OWN statement (not an elif off the entry branch) so the
+        # stop evaluation can never be skipped when an entry was also signaled;
+        # it is evaluated against the stop_price computed above (PR #15 review).
+        if in_position and (composite <= -ENTRY_THRESHOLD or price < stop_price):
             exit_price = price * (1 - slippage_pct)
             proceeds = position_size * exit_price
             equity += proceeds - proceeds * commission_pct  # Commission on exit
